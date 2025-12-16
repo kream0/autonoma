@@ -24,12 +24,16 @@ function showHelp(): void {
 Autonoma - Claude Code Orchestrator
 
 Usage:
-  autonoma start <requirements.md>    Start new orchestration with requirements file
+  autonoma start <requirements.md> [--max-developers N]
+                                      Start new orchestration with requirements file
   autonoma resume <project-dir>       Resume from saved state in project directory
-  autonoma adopt <requirements.md> [--context file1,file2,...]
+  autonoma adopt <requirements.md> [--context file1,file2,...] [--max-developers N]
                                       Adopt existing project and plan remaining work
   autonoma demo                       Run demo mode with mock agents
   autonoma --help                     Show this help
+
+Options:
+  --max-developers N    Maximum parallel developers (default: 6, Staff Engineer may recommend fewer)
 
 Commands:
   start   - Begin fresh orchestration. Creates .autonoma/state.json for resume.
@@ -190,6 +194,18 @@ async function runOrchestration(pathArg: string, mode: OrchestrationMode, contex
   }
 
   const app = new App(workingDir);
+
+  // Parse --max-developers flag (applies to start and adopt modes)
+  const maxDevIdx = args.indexOf('--max-developers');
+  if (maxDevIdx !== -1 && args[maxDevIdx + 1]) {
+    const maxDevs = parseInt(args[maxDevIdx + 1]!, 10);
+    if (!isNaN(maxDevs) && maxDevs >= 1 && maxDevs <= 10) {
+      app.orchestrator.setMaxDevelopers(maxDevs);
+    } else {
+      console.error('Error: --max-developers must be a number between 1 and 10');
+      process.exit(1);
+    }
+  }
 
   // For resume mode, load state first to get maxDevelopers
   if (mode === 'resume') {

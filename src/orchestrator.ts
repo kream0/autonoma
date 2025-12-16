@@ -24,7 +24,7 @@ import type {
 const STATE_VERSION = 3;  // v3: minimal storage (paths instead of content)
 
 /** Default number of parallel developers */
-const DEFAULT_MAX_DEVELOPERS = 3;
+const DEFAULT_MAX_DEVELOPERS = 6;
 
 /** System prompts for each agent role */
 const SYSTEM_PROMPTS: Record<AgentRole, string> = {
@@ -56,42 +56,62 @@ Your output MUST end with a JSON block containing the plan:
 <responsibilities>
 - Receive milestones from the CEO
 - Break them into specific, actionable coding tasks
+- ANALYZE TASK COMPLEXITY to prevent context overflow in developers
+- Recommend optimal number of parallel developers based on task complexity
 - Group tasks into BATCHES based on dependencies
 - Tasks in the same batch that touch DIFFERENT files can run in PARALLEL
-- Tasks that depend on other tasks must be in LATER batches
 </responsibilities>
 
-<critical>Organize tasks for PARALLEL EXECUTION by multiple developers.</critical>
+<complexity_analysis>
+<instruction>For each task, estimate its complexity based on:</instruction>
+<factors>
+- File count and scope of changes
+- Amount of existing code that must be read/understood
+- Cognitive complexity (algorithms, architecture decisions)
+- Integration points with other components
+</factors>
+<levels>
+- simple: Single file, straightforward change, ~5-50 lines
+- moderate: 1-3 files, well-defined scope, ~50-200 lines
+- complex: Multiple files, requires understanding codebase, ~200-500 lines
+- very_complex: Cross-cutting concern, architectural, requires extensive context
+</levels>
+</complexity_analysis>
+
+<developer_recommendation>
+<critical>Each developer starts with a FRESH context window - NO context carryover between tasks</critical>
+<rule>Complex/very_complex tasks consume more context tokens during execution</rule>
+<rule>Too many parallel complex tasks = developers may hit context limits (autocompact)</rule>
+<guidance>
+- All simple/moderate tasks: recommend up to 6 developers (full parallelism)
+- Mix with some complex tasks: recommend 3-4 developers
+- Mostly complex/very_complex tasks: recommend 1-2 developers, or split large tasks
+</guidance>
+</developer_recommendation>
 
 <output_format>
-Your output MUST end with a JSON block containing batched tasks:
+Your output MUST end with a JSON block:
 \`\`\`json
 {
+  "recommendedDevelopers": <number 1-6>,
+  "reasoning": "<brief explanation of why this number>",
   "batches": [
     {
       "batchId": 1,
       "parallel": false,
       "description": "Initial setup - must run first",
       "tasks": [
-        {"id": 1, "title": "Initialize project", "description": "...", "files": ["package.json", "tsconfig.json"]}
+        {"id": 1, "title": "Initialize project", "description": "...", "files": ["package.json"], "complexity": "simple"}
       ]
     },
     {
       "batchId": 2,
       "parallel": true,
-      "description": "Core features - can run in parallel (different files)",
+      "maxParallelTasks": 3,
+      "description": "Core features - limited parallelism due to complexity",
       "tasks": [
-        {"id": 2, "title": "Implement player movement", "description": "...", "files": ["src/player.ts"]},
-        {"id": 3, "title": "Implement weapon system", "description": "...", "files": ["src/weapons.ts"]},
-        {"id": 4, "title": "Implement HUD", "description": "...", "files": ["src/hud.ts"]}
-      ]
-    },
-    {
-      "batchId": 3,
-      "parallel": false,
-      "description": "Integration - depends on previous batches",
-      "tasks": [
-        {"id": 5, "title": "Wire up game loop", "description": "...", "files": ["src/main.ts"]}
+        {"id": 2, "title": "Implement auth", "description": "...", "files": ["src/auth.ts"], "complexity": "complex", "context": "Reference session.ts patterns"},
+        {"id": 3, "title": "Implement API", "description": "...", "files": ["src/api.ts"], "complexity": "moderate"}
       ]
     }
   ]
@@ -104,6 +124,7 @@ Your output MUST end with a JSON block containing batched tasks:
 2. Tasks touching DIFFERENT files can be parallel: true
 3. Tasks touching the SAME files must be in different batches or parallel: false
 4. Later batches can depend on earlier batches completing
+5. Use maxParallelTasks on batches with complex tasks to limit concurrency
 </batching_rules>
 
 <completion_signal>Signal completion with [TASKS_READY] after the JSON.</completion_signal>`,
@@ -158,11 +179,21 @@ interface ParsedPlan {
 }
 
 interface ParsedBatches {
+  recommendedDevelopers?: number;  // Staff Engineer's recommendation
+  reasoning?: string;  // Explanation for the recommendation
   batches: Array<{
     batchId: number;
     parallel: boolean;
     description?: string;
-    tasks: Array<{ id: number; title: string; description: string; files?: string[] }>;
+    maxParallelTasks?: number;  // Per-batch parallelism limit
+    tasks: Array<{
+      id: number;
+      title: string;
+      description: string;
+      files?: string[];
+      complexity?: 'simple' | 'moderate' | 'complex' | 'very_complex';
+      context?: string;  // Task-specific context for developer
+    }>;
   }>;
 }
 
@@ -1000,10 +1031,37 @@ ${milestoneText}
 
     if (parsed && 'batches' in (parsed as object)) {
       const batchedPlan = parsed as ParsedBatches;
+
+      // Apply Staff Engineer's developer recommendation (advisory - capped by maxDevelopers)
+      if (batchedPlan.recommendedDevelopers !== undefined) {
+        const recommended = batchedPlan.recommendedDevelopers;
+        const actual = Math.min(recommended, this.maxDevelopers);
+
+        this.events.onAgentOutput(staffAgent.state.config.id,
+          `[COMPLEXITY] Staff recommends ${recommended} parallel developers: ${batchedPlan.reasoning || 'no reason given'}`);
+
+        if (actual < this.maxDevelopers) {
+          this.events.onAgentOutput(staffAgent.state.config.id,
+            `[COMPLEXITY] Reducing from ${this.maxDevelopers} to ${actual} developers to avoid context limits`);
+          this.setMaxDevelopers(actual);
+          this.persistedState!.maxDevelopers = actual;
+        } else if (actual === this.maxDevelopers) {
+          this.events.onAgentOutput(staffAgent.state.config.id,
+            `[COMPLEXITY] Using ${actual} developers (full parallelism)`);
+        }
+      }
+
+      // Store batches with complexity and context info
       this.persistedState!.batches = batchedPlan.batches.map(b => ({
         batchId: b.batchId,
-        tasks: b.tasks.map(t => ({ ...t, status: 'pending' as const })),
+        tasks: b.tasks.map(t => ({
+          ...t,
+          status: 'pending' as const,
+          complexity: t.complexity,
+          context: t.context,
+        })),
         parallel: b.parallel,
+        maxParallelTasks: b.maxParallelTasks,
         status: 'pending' as const,
       }));
 
@@ -1100,14 +1158,24 @@ ${requirements}
    * Execute tasks in parallel using multiple developers
    */
   private async executeTasksInParallel(
-    _batch: TaskBatch,
+    batch: TaskBatch,
     tasks: DevTask[],
     developers: Array<{ state: AgentState; session: ClaudeSession }>,
     contextSection: string
   ): Promise<void> {
-    // Process tasks in chunks based on available developers
-    for (let i = 0; i < tasks.length; i += developers.length) {
-      const chunk = tasks.slice(i, i + developers.length);
+    // Use batch-specific parallelism limit if provided, otherwise use all available developers
+    const maxParallel = batch.maxParallelTasks ?? developers.length;
+    const effectiveDevelopers = developers.slice(0, maxParallel);
+
+    // Log if batch has reduced parallelism due to complexity
+    if (maxParallel < developers.length && effectiveDevelopers[0]) {
+      this.events.onAgentOutput(effectiveDevelopers[0].state.config.id,
+        `[COMPLEXITY] Batch ${batch.batchId} limited to ${maxParallel} parallel tasks`);
+    }
+
+    // Process tasks in chunks based on effective developers
+    for (let i = 0; i < tasks.length; i += effectiveDevelopers.length) {
+      const chunk = tasks.slice(i, i + effectiveDevelopers.length);
 
       // Track which tasks are in progress
       this.persistedState!.currentTasksInProgress = chunk.map(t => t.id);
@@ -1115,7 +1183,7 @@ ${requirements}
 
       // Start all tasks in this chunk in parallel
       const promises = chunk.map(async (devTask, idx) => {
-        const developer = developers[idx % developers.length]!;
+        const developer = effectiveDevelopers[idx % effectiveDevelopers.length]!;
 
         devTask.status = 'running';
         devTask.assignedTo = developer.state.config.id;
@@ -1124,13 +1192,15 @@ ${requirements}
         this.updateTaskStatus(task.id, 'running');
 
         this.events.onAgentOutput(developer.state.config.id,
-          `[PARALLEL] Task ${devTask.id}: ${devTask.title}`);
+          `[PARALLEL] Task ${devTask.id}: ${devTask.title}${devTask.complexity ? ` (${devTask.complexity})` : ''}`);
 
         const devPrompt = `${contextSection}<task>
 <id>${devTask.id}</id>
 <title>${devTask.title}</title>
 <description>${devTask.description}</description>
 ${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
+${devTask.complexity ? `<complexity>${devTask.complexity}</complexity>` : ''}
+${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
 </task>
 
 <execution_context>
@@ -1181,13 +1251,15 @@ ${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
       this.updateTaskStatus(task.id, 'running');
 
       this.events.onAgentOutput(developer.state.config.id,
-        `[SEQUENTIAL] Task ${devTask.id}: ${devTask.title}`);
+        `[SEQUENTIAL] Task ${devTask.id}: ${devTask.title}${devTask.complexity ? ` (${devTask.complexity})` : ''}`);
 
       const devPrompt = `${contextSection}<task>
 <id>${devTask.id}</id>
 <title>${devTask.title}</title>
 <description>${devTask.description}</description>
 ${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
+${devTask.complexity ? `<complexity>${devTask.complexity}</complexity>` : ''}
+${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
 </task>
 
 <execution_context>

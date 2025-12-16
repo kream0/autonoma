@@ -7,8 +7,8 @@ A CLI tool that orchestrates multiple Claude Code instances with a hierarchical 
 Autonoma enables faster development by running multiple Claude Code agents in parallel:
 
 - **CEO Agent** - Creates high-level plan from requirements
-- **Staff Engineer** - Breaks plan into batched tasks
-- **Developer Agents** (3x) - Execute tasks in parallel
+- **Staff Engineer** - Breaks plan into batched tasks with complexity analysis
+- **Developer Agents** (up to 6) - Execute tasks in parallel
 - **QA Agent** - Reviews completed work
 
 All agents are visible simultaneously in a split-tile TUI, with keyboard navigation similar to a video call interface.
@@ -40,6 +40,12 @@ bun run dev start requirements.md
 ```
 
 Creates a fresh orchestration from a requirements file. State is saved to `.autonoma/state.json` for resume capability.
+
+Optionally limit parallel developers:
+
+```bash
+bun run dev start requirements.md --max-developers 4
+```
 
 ### Resume Project
 
@@ -126,9 +132,22 @@ Overview of all agents with token usage and cost breakdown.
 State includes:
 - Requirements path
 - Plan from CEO
-- Task batches from Staff Engineer
-- Current progress
+- Task batches from Staff Engineer (with complexity and context)
+- Current progress and developer count
 - Completed phases
+
+## Complexity-Aware Allocation
+
+The Staff Engineer analyzes task complexity and recommends optimal parallelism:
+
+| Complexity | Description | Guidance |
+|------------|-------------|----------|
+| `simple` | Single file, ~5-50 lines | Full parallelism (6 devs) |
+| `moderate` | 1-3 files, ~50-200 lines | Full parallelism |
+| `complex` | Multiple files, ~200-500 lines | Reduced (3-4 devs) |
+| `very_complex` | Architectural, extensive context | Minimal (1-2 devs) |
+
+Each task also receives a `context` field with task-specific guidance for developers, and batches with complex tasks use `maxParallelTasks` to prevent context overflow.
 
 ## Development
 

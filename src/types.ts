@@ -11,6 +11,9 @@ export type AgentStatus = 'idle' | 'running' | 'complete' | 'error';
 /** Permission mode for Claude Code CLI */
 export type PermissionMode = 'plan' | 'full';
 
+/** Task complexity levels for context-aware developer allocation */
+export type TaskComplexity = 'simple' | 'moderate' | 'complex' | 'very_complex';
+
 /** Agent configuration */
 export interface AgentConfig {
   id: string;
@@ -111,6 +114,8 @@ export interface DevTask {
   files?: string[];
   status: 'pending' | 'running' | 'complete' | 'failed';
   assignedTo?: string;  // Developer agent ID
+  complexity?: TaskComplexity;  // Task complexity for context estimation
+  context?: string;  // Task-specific context for the developer
 }
 
 /** Batch of tasks that can be executed together */
@@ -119,6 +124,7 @@ export interface TaskBatch {
   tasks: DevTask[];
   parallel: boolean;  // If true, tasks in this batch can run simultaneously
   status: 'pending' | 'running' | 'complete' | 'failed';
+  maxParallelTasks?: number;  // Per-batch parallelism override (for complex batches)
 }
 
 /** Persisted state for resume capability (v3 - minimal storage) */

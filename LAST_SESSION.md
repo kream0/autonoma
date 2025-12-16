@@ -1,46 +1,54 @@
 # Last Session Summary
 
-## Session 7 - December 16, 2025
+## Session 8 - December 16, 2025
 
 ### Focus
-XML Prompt Structuring & Project Documentation Detection
+Intelligent Developer Allocation Based on Task Complexity
 
 ### Objective
-Improve prompt quality by using XML tags for structure, and add support for common project documentation files.
+Have the Staff Engineer determine how many developers to spawn simultaneously to avoid context limits (autocompact), and ensure each task starts with fresh context.
 
 ---
 
 ## What Was Accomplished
 
-### 1. XML Tags for All Prompts
-- Refactored all `SYSTEM_PROMPTS` (CEO, Staff, Developer, QA) to use XML tags
-- Updated all dynamic prompts to use structured XML format:
-  - `<role>`, `<responsibilities>`, `<output_format>`, `<completion_signal>`
-  - `<task>`, `<requirements>`, `<instructions>`, `<step>`
-  - `<execution_context>`, `<constraint>`, `<mode>`
+### 1. Increased Default Developers
+- Changed `DEFAULT_MAX_DEVELOPERS` from 3 to 6
+- Allows more parallelism for simple tasks
 
-### 2. Context Section XML Format
-- Updated `buildContextSection()` to output XML-structured content
-- `<project_guidelines>` for CLAUDE.md content
-- `<project_documentation>` for detected project docs
+### 2. Added Task Complexity Types
+- New `TaskComplexity` type: `'simple' | 'moderate' | 'complex' | 'very_complex'`
+- Extended `DevTask` with `complexity` and `context` fields
+- Extended `TaskBatch` with `maxParallelTasks` for per-batch parallelism control
 
-### 3. User Context Files XML Format
-- Updated `loadContextFiles()` for adopt command to use XML format
-- `<user_provided_context>` with `<files>` containing `<file name="...">` elements
+### 3. Updated Staff Engineer Prompt
+- Added `<complexity_analysis>` section with complexity estimation guidance
+- Added `<developer_recommendation>` section with parallelism guidelines
+- Updated output format to include:
+  - `recommendedDevelopers` (1-6)
+  - `reasoning` (explanation)
+  - `complexity` per task
+  - `context` per task (task-specific guidance for developers)
+  - `maxParallelTasks` per batch
 
-### 4. Project Documentation Detection
-- Added `PROJECT_DOC_FILES` constant for common docs:
-  - PRD.md, TODO.md, LAST_SESSION.md, BACKLOG.md, COMPLETED_TASKS.md
-- Added `loadProjectDocs()` method to detect and load these files
-- Integrated into `start()`, `resume()`, and `adoptProject()` flows
-- Info messages show which project docs were found
+### 4. Implemented Recommendation Parsing
+- Staff Engineer's `recommendedDevelopers` is parsed in `runTaskBreakdownPhase()`
+- Recommendation is advisory (capped by user's `--max-developers`)
+- Logs reasoning and applies reduced developer count if recommended
 
-### 5. Permission Mode Support
-- Added `PermissionMode` type ('plan' | 'full') to types.ts
-- Added `permissionMode` field to `AgentConfig`
-- CEO and Staff Engineer use `--permission-mode plan` (read-only)
-- Developer and QA use `--dangerously-skip-permissions` (full access)
-- This improves security by limiting what planning agents can do
+### 5. Per-Batch Parallelism Control
+- `executeTasksInParallel()` now respects `batch.maxParallelTasks`
+- Uses `effectiveDevelopers = developers.slice(0, maxParallel)` for complex batches
+- Logs when batch parallelism is reduced
+
+### 6. Developer Prompts Include Context
+- Both `executeTasksInParallel()` and `executeTasksSequentially()` now include:
+  - `<complexity>` tag showing task complexity
+  - `<task_context>` tag with Staff's guidance for the developer
+
+### 7. CLI Flag Added
+- `--max-developers N` flag for user override (1-10 range)
+- Updated help text with new option
 
 ---
 
@@ -48,48 +56,49 @@ Improve prompt quality by using XML tags for structure, and add support for comm
 
 | File | Changes |
 |------|---------|
-| `src/types.ts` | Added PermissionMode type and permissionMode to AgentConfig |
-| `src/session.ts` | Use permissionMode to set CLI args (plan vs full) |
-| `src/orchestrator.ts` | XML prompts, project doc detection, permission mode logic |
-| `src/tui/tiles.ts` | Added permissionMode to mock agent config |
-| `TODO.md` | Updated with session 7 changes |
+| `src/types.ts` | Added `TaskComplexity` type, extended `DevTask`, `TaskBatch` |
+| `src/orchestrator.ts` | Default=6, Staff prompt, parse recommendations, per-batch control |
+| `src/index.ts` | Added `--max-developers N` CLI flag |
 | `LAST_SESSION.md` | This file |
+| `TODO.md` | Updated with session 8 changes |
 
 ---
 
-## XML Tag Structure Used
+## New Staff Engineer Output Format
 
-```xml
-<!-- System Prompts -->
-<role>Agent role name</role>
-<responsibilities>List of responsibilities</responsibilities>
-<output_format>Expected output format</output_format>
-<completion_signal>How to signal completion</completion_signal>
-
-<!-- Dynamic Prompts -->
-<task>What to do</task>
-<requirements>User requirements</requirements>
-<instructions><step>Step 1</step><step>Step 2</step></instructions>
-<execution_context><mode>PARALLEL|SEQUENTIAL</mode></execution_context>
-
-<!-- Context -->
-<project_guidelines><source>CLAUDE.md</source><content>...</content></project_guidelines>
-<project_documentation><document name="PRD.md">...</document></project_documentation>
-<user_provided_context><files><file name="...">...</file></files></user_provided_context>
+```json
+{
+  "recommendedDevelopers": 3,
+  "reasoning": "Mix of moderate and complex tasks - limiting to 3 to avoid context limits",
+  "batches": [
+    {
+      "batchId": 1,
+      "parallel": true,
+      "maxParallelTasks": 2,
+      "tasks": [
+        {
+          "id": 1,
+          "title": "...",
+          "description": "...",
+          "files": ["..."],
+          "complexity": "complex",
+          "context": "Reference existing patterns in session.ts"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ---
 
-## Detected Project Docs
+## How It Works
 
-When running, Autonoma now automatically detects and includes:
-- PRD.md (Product Requirements Document)
-- TODO.md (Current tasks)
-- LAST_SESSION.md (Previous session summary)
-- BACKLOG.md (Future tasks)
-- COMPLETED_TASKS.md (Archived completed work)
-
-This helps agents understand project context without manual specification.
+1. User runs `autonoma start requirements.md` (default 6 developers)
+2. Staff Engineer analyzes tasks and recommends developer count based on complexity
+3. Orchestrator applies recommendation (capped by user's max)
+4. Per-batch `maxParallelTasks` further limits parallelism for complex batches
+5. Each developer gets fresh context with task-specific guidance
 
 ---
 
@@ -98,19 +107,22 @@ This helps agents understand project context without manual specification.
 | Feature | Status |
 |---------|--------|
 | Type checking | Passing |
-| XML prompt structure | Implemented |
-| Project doc detection | Implemented |
-| Context section XML | Implemented |
+| Default developers (6) | Implemented |
+| Complexity types | Implemented |
+| Staff Engineer prompt | Updated |
+| Recommendation parsing | Implemented |
+| Per-batch parallelism | Implemented |
+| CLI flag | Implemented |
 
 ---
 
 ## Next Session Priorities
 
-1. Add `--max-developers N` CLI flag
+1. Test with real orchestration run
 2. Implement retry for failed tasks
-3. Better tile layout for 3+ developers
-4. Graceful shutdown (SIGINT handling)
+3. Graceful shutdown (SIGINT handling)
+4. Better tile layout for 6 developers
 
 ---
 
-*Session 7 - XML Prompt Structuring & Project Doc Detection Complete*
+*Session 8 - Intelligent Developer Allocation Complete*

@@ -1,7 +1,7 @@
 # TODO - Development Priorities
 
-**Last Updated:** December 16, 2025 (Session 7)
-**Current Focus:** XML Prompt Structuring & Project Doc Detection
+**Last Updated:** December 16, 2025 (Session 8)
+**Current Focus:** Intelligent Developer Allocation
 **Project Status:** Production Ready
 **Stack:** TypeScript, Bun, blessed (TUI)
 
@@ -11,14 +11,14 @@
 
 | Task | Status |
 |------|--------|
-| Refactor all agent prompts to use XML tags for better structure | DONE |
-| Add project documentation detection (PRD.md, TODO.md, etc.) | DONE |
-| Include detected docs in agent prompts with XML structure | DONE |
-| Update buildContextSection to use XML format | DONE |
-| Update loadContextFiles to use XML format | DONE |
-| Add permission mode support (plan vs full) | DONE |
-| CEO and Staff use --permission-mode plan (read-only) | DONE |
-| Developer and QA use --dangerously-skip-permissions (full access) | DONE |
+| Change DEFAULT_MAX_DEVELOPERS from 3 to 6 | DONE |
+| Add TaskComplexity type and extend DevTask/TaskBatch | DONE |
+| Update Staff Engineer prompt with complexity analysis | DONE |
+| Parse recommendedDevelopers from Staff output | DONE |
+| Apply advisory recommendation (capped by user max) | DONE |
+| Add per-batch maxParallelTasks support | DONE |
+| Update developer prompts to include complexity and context | DONE |
+| Add --max-developers N CLI flag | DONE |
 
 ---
 
@@ -28,16 +28,19 @@
 # From autonoma directory:
 cd /mnt/c/Users/Karim/Documents/work/_tools/AI/autonoma
 
-# Fresh start - new project
+# Fresh start - new project (default 6 developers)
 bun run dev start /path/to/project/requirements.md
 
-# Adopt existing project (analyze what exists, plan remaining work)
+# Fresh start with custom developer limit
+bun run dev start /path/to/project/requirements.md --max-developers 4
+
+# Adopt existing project
 bun run dev adopt /path/to/project/requirements.md
 
-# Adopt with context files (saves tokens on large codebases)
-bun run dev adopt /path/to/project/requirements.md --context structure.md,architecture.md
+# Adopt with context files and custom developer limit
+bun run dev adopt /path/to/project/requirements.md --context structure.md --max-developers 3
 
-# Resume from checkpoint (after quit or crash)
+# Resume from checkpoint
 bun run dev resume /path/to/project
 
 # Run demo mode
@@ -49,35 +52,36 @@ bun run dev --help
 
 ---
 
+## COMPLEXITY-AWARE DEVELOPER ALLOCATION
+
+The Staff Engineer now analyzes task complexity and recommends parallel developer count:
+
+| Complexity | Guidance |
+|------------|----------|
+| simple | Single file, ~5-50 lines |
+| moderate | 1-3 files, ~50-200 lines |
+| complex | Multiple files, ~200-500 lines |
+| very_complex | Architectural, extensive context |
+
+| Task Mix | Recommended Developers |
+|----------|----------------------|
+| All simple/moderate | Up to 6 (full parallelism) |
+| Mix with complex | 3-4 developers |
+| Mostly complex/very_complex | 1-2 developers |
+
+---
+
 ## STATE FORMAT (v3)
 
 State saved to `<project>/.autonoma/state.json`:
 - `requirementsPath` - Path to requirements file (not content)
 - `hasProjectContext` - Whether CLAUDE.md exists (not content)
-- `batches` - Tasks organized into parallel/sequential batches
+- `batches` - Tasks with complexity and context fields
 - `currentBatchIndex` - Which batch we're on
 - `currentTasksInProgress` - Tasks currently running
+- `maxDevelopers` - Current developer limit (may be reduced by Staff)
 
 Logs saved to `<project>/.autonoma/logs/`
-
----
-
-## PARALLEL EXECUTION
-
-Staff Engineer outputs batched tasks:
-```json
-{
-  "batches": [
-    {"batchId": 1, "parallel": false, "tasks": [...]},
-    {"batchId": 2, "parallel": true, "tasks": [...]}
-  ]
-}
-```
-
-- 3 developer agents by default
-- Parallel batches run tasks simultaneously
-- Sequential batches run one task at a time
-- Resume-aware: picks up from exact batch/task
 
 ---
 
@@ -95,12 +99,11 @@ Staff Engineer outputs batched tasks:
 |------|--------|
 | Text selection in tiles | Pending |
 | Progress bar for batches | Pending |
-| Better tile sizing for many developers | Pending |
+| Better tile sizing for 6 developers | Pending |
 
 ### Priority 3: Configuration
 | Task | Status |
 |------|--------|
-| `--max-developers N` CLI flag | Pending |
 | Config file support (.autonomarc) | Pending |
 | Custom agent prompts | Pending |
 
@@ -110,17 +113,17 @@ Staff Engineer outputs batched tasks:
 
 ```
 src/
-├── index.ts          # CLI entry point (start/resume/adopt/demo)
-├── types.ts          # Type definitions (TokenUsage, DevTask, TaskBatch, PersistedState)
-├── session.ts        # Claude Code subprocess wrapper (stream-json, token tracking)
-├── orchestrator.ts   # Agent hierarchy, parallel execution, state persistence
+├── index.ts          # CLI entry point (start/resume/adopt/demo, --max-developers)
+├── types.ts          # Type definitions (TaskComplexity, DevTask, TaskBatch)
+├── session.ts        # Claude Code subprocess wrapper
+├── orchestrator.ts   # Agent hierarchy, complexity analysis, parallel execution
 └── tui/
     ├── screen.ts     # Blessed screen + keybindings
     ├── tiles.ts      # Split-tile layout
     └── views/
-        ├── tasks.ts  # Task list view (with progress in title)
-        ├── stats.ts  # Stats view (with token counts)
-        └── dashboard.ts  # Dashboard (all devs + tokens/cost)
+        ├── tasks.ts  # Task list view
+        ├── stats.ts  # Stats view
+        └── dashboard.ts
 ```
 
 ---
