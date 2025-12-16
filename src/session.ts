@@ -95,10 +95,16 @@ export class ClaudeSession {
     const args = [
       'claude',
       '--model', 'claude-opus-4-5-20251101',
-      '--dangerously-skip-permissions',
       '--output-format', 'stream-json',  // Enable streaming JSON output
       '--verbose',  // Required for stream-json with -p
     ];
+
+    // Set permission mode based on agent config
+    if (this.config.permissionMode === 'plan') {
+      args.push('--permission-mode', 'plan');
+    } else {
+      args.push('--dangerously-skip-permissions');
+    }
 
     // Add system prompt if configured
     if (this.config.systemPrompt) {

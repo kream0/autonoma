@@ -16,6 +16,9 @@
 | Include detected docs in agent prompts with XML structure | DONE |
 | Update buildContextSection to use XML format | DONE |
 | Update loadContextFiles to use XML format | DONE |
+| Add permission mode support (plan vs full) | DONE |
+| CEO and Staff use --permission-mode plan (read-only) | DONE |
+| Developer and QA use --dangerously-skip-permissions (full access) | DONE |
 
 ---
 

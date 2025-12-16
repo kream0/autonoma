@@ -35,13 +35,23 @@ Improve prompt quality by using XML tags for structure, and add support for comm
 - Integrated into `start()`, `resume()`, and `adoptProject()` flows
 - Info messages show which project docs were found
 
+### 5. Permission Mode Support
+- Added `PermissionMode` type ('plan' | 'full') to types.ts
+- Added `permissionMode` field to `AgentConfig`
+- CEO and Staff Engineer use `--permission-mode plan` (read-only)
+- Developer and QA use `--dangerously-skip-permissions` (full access)
+- This improves security by limiting what planning agents can do
+
 ---
 
 ## Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/orchestrator.ts` | XML prompts, project doc detection, context section refactor |
+| `src/types.ts` | Added PermissionMode type and permissionMode to AgentConfig |
+| `src/session.ts` | Use permissionMode to set CLI args (plan vs full) |
+| `src/orchestrator.ts` | XML prompts, project doc detection, permission mode logic |
+| `src/tui/tiles.ts` | Added permissionMode to mock agent config |
 | `TODO.md` | Updated with session 7 changes |
 | `LAST_SESSION.md` | This file |
 

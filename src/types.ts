@@ -8,6 +8,9 @@ export type AgentRole = 'ceo' | 'staff' | 'developer' | 'qa';
 /** Agent status */
 export type AgentStatus = 'idle' | 'running' | 'complete' | 'error';
 
+/** Permission mode for Claude Code CLI */
+export type PermissionMode = 'plan' | 'full';
+
 /** Agent configuration */
 export interface AgentConfig {
   id: string;
@@ -15,6 +18,7 @@ export interface AgentConfig {
   name: string;
   systemPrompt?: string;
   workingDir: string;
+  permissionMode: PermissionMode;  // 'plan' = read-only, 'full' = can write
 }
 
 /** Token usage tracking */

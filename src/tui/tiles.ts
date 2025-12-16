@@ -342,6 +342,7 @@ export class TileManager {
           role: tile.config.role,
           name: tile.config.name,
           workingDir: '',
+          permissionMode: tile.config.role === 'ceo' || tile.config.role === 'staff' ? 'plan' : 'full',
         },
         status: 'idle',
         output: [],

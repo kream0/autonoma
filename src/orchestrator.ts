@@ -460,6 +460,22 @@ export class Orchestrator {
   }
 
   /**
+   * Get permission mode for a role
+   * CEO and Staff only need to read/analyze - use plan mode
+   * Developer and QA need to write files - use full permissions
+   */
+  private getPermissionMode(role: AgentRole): 'plan' | 'full' {
+    switch (role) {
+      case 'ceo':
+      case 'staff':
+        return 'plan';  // Read-only for planning/analysis
+      case 'developer':
+      case 'qa':
+        return 'full';  // Full access for implementation/testing
+    }
+  }
+
+  /**
    * Create an agent
    */
   createAgent(role: AgentRole, name: string): string {
@@ -470,6 +486,7 @@ export class Orchestrator {
       name,
       systemPrompt: SYSTEM_PROMPTS[role],
       workingDir: this.workingDir,
+      permissionMode: this.getPermissionMode(role),
     };
 
     const state: AgentState = {
