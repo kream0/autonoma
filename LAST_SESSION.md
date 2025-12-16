@@ -1,37 +1,39 @@
 # Last Session Summary
 
-## Session 6 - December 16, 2025
+## Session 7 - December 16, 2025
 
 ### Focus
-Tasks View Improvements & Adopt Context Files
+XML Prompt Structuring & Project Documentation Detection
 
 ### Objective
-Show all tasks (including pending) in tasks view and add context file support to adopt command.
+Improve prompt quality by using XML tags for structure, and add support for common project documentation files.
 
 ---
 
 ## What Was Accomplished
 
-### 1. Tasks View - Show All Batch Tasks
-- Added `getAllBatchTasks()` method to Orchestrator
-- Returns all tasks from persisted state batches (pending, running, complete, failed)
-- Tasks view now shows complete picture of all planned work
-- Falls back to runtime tasks if no batches exist yet
+### 1. XML Tags for All Prompts
+- Refactored all `SYSTEM_PROMPTS` (CEO, Staff, Developer, QA) to use XML tags
+- Updated all dynamic prompts to use structured XML format:
+  - `<role>`, `<responsibilities>`, `<output_format>`, `<completion_signal>`
+  - `<task>`, `<requirements>`, `<instructions>`, `<step>`
+  - `<execution_context>`, `<constraint>`, `<mode>`
 
-### 2. Tasks Panel Title Progress
-- Title now shows "Tasks N/TOTAL [ESC to close]"
-- N = completed tasks count
-- TOTAL = all tasks count
-- Updates dynamically as tasks complete
+### 2. Context Section XML Format
+- Updated `buildContextSection()` to output XML-structured content
+- `<project_guidelines>` for CLAUDE.md content
+- `<project_documentation>` for detected project docs
 
-### 3. Adopt Command Context Files
-- Added `--context` flag: `adopt requirements.md --context file1.md,file2.md`
-- Context files are included in CEO prompt to guide analysis
-- Reduces token usage on large codebases by avoiding redundant exploration
-- Instructions tell agent to "trust context, only verify critical areas"
+### 3. User Context Files XML Format
+- Updated `loadContextFiles()` for adopt command to use XML format
+- `<user_provided_context>` with `<files>` containing `<file name="...">` elements
 
-### 4. Gitignore Update
-- Added `realproject/` to .gitignore for test projects
+### 4. Project Documentation Detection
+- Added `PROJECT_DOC_FILES` constant for common docs:
+  - PRD.md, TODO.md, LAST_SESSION.md, BACKLOG.md, COMPLETED_TASKS.md
+- Added `loadProjectDocs()` method to detect and load these files
+- Integrated into `start()`, `resume()`, and `adoptProject()` flows
+- Info messages show which project docs were found
 
 ---
 
@@ -39,30 +41,45 @@ Show all tasks (including pending) in tasks view and add context file support to
 
 | File | Changes |
 |------|---------|
-| `src/orchestrator.ts` | Added `getAllBatchTasks()`, `loadContextFiles()`, updated `adoptProject()` |
-| `src/index.ts` | Updated CLI help, parse `--context` flag, pass to orchestrator |
-| `src/tui/views/tasks.ts` | Show progress in panel title |
-| `.gitignore` | Added realproject/ |
-| `TODO.md` | Updated with session 6 changes |
+| `src/orchestrator.ts` | XML prompts, project doc detection, context section refactor |
+| `TODO.md` | Updated with session 7 changes |
+| `LAST_SESSION.md` | This file |
 
 ---
 
-## New Features
+## XML Tag Structure Used
 
-### Adopt with Context Files
-```bash
-# Provide context files to save tokens
-bun run dev adopt requirements.md --context structure.md,architecture.md
+```xml
+<!-- System Prompts -->
+<role>Agent role name</role>
+<responsibilities>List of responsibilities</responsibilities>
+<output_format>Expected output format</output_format>
+<completion_signal>How to signal completion</completion_signal>
 
-# Multiple files separated by commas
-bun run dev adopt requirements.md --context STRUCTURE.md,ARCHITECTURE.md,API_DOCS.md
+<!-- Dynamic Prompts -->
+<task>What to do</task>
+<requirements>User requirements</requirements>
+<instructions><step>Step 1</step><step>Step 2</step></instructions>
+<execution_context><mode>PARALLEL|SEQUENTIAL</mode></execution_context>
+
+<!-- Context -->
+<project_guidelines><source>CLAUDE.md</source><content>...</content></project_guidelines>
+<project_documentation><document name="PRD.md">...</document></project_documentation>
+<user_provided_context><files><file name="...">...</file></files></user_provided_context>
 ```
 
-Context files could contain:
-- Folder structure (`tree` output)
-- Architecture overview
-- API documentation
-- Existing implementation status
+---
+
+## Detected Project Docs
+
+When running, Autonoma now automatically detects and includes:
+- PRD.md (Product Requirements Document)
+- TODO.md (Current tasks)
+- LAST_SESSION.md (Previous session summary)
+- BACKLOG.md (Future tasks)
+- COMPLETED_TASKS.md (Archived completed work)
+
+This helps agents understand project context without manual specification.
 
 ---
 
@@ -71,10 +88,9 @@ Context files could contain:
 | Feature | Status |
 |---------|--------|
 | Type checking | Passing |
-| getAllBatchTasks() | Implemented |
-| Tasks title progress | Implemented |
-| --context flag parsing | Implemented |
-| Context files in prompt | Implemented |
+| XML prompt structure | Implemented |
+| Project doc detection | Implemented |
+| Context section XML | Implemented |
 
 ---
 
@@ -87,4 +103,4 @@ Context files could contain:
 
 ---
 
-*Session 6 - Tasks View & Adopt Context Files Complete*
+*Session 7 - XML Prompt Structuring & Project Doc Detection Complete*

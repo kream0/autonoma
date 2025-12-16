@@ -28,13 +28,17 @@ const DEFAULT_MAX_DEVELOPERS = 3;
 
 /** System prompts for each agent role */
 const SYSTEM_PROMPTS: Record<AgentRole, string> = {
-  ceo: `You are the CEO Agent in Autonoma. Your role is to:
+  ceo: `<role>CEO Agent in Autonoma</role>
+
+<responsibilities>
 - Analyze the given requirements and project context
 - Create a high-level plan with clear milestones
 - Ensure the plan follows any project guidelines provided
 - Output a structured plan that the Staff Engineer can break into tasks
+</responsibilities>
 
-IMPORTANT: Your output should end with a JSON block containing the plan:
+<output_format>
+Your output MUST end with a JSON block containing the plan:
 \`\`\`json
 {
   "milestones": [
@@ -43,19 +47,24 @@ IMPORTANT: Your output should end with a JSON block containing the plan:
   ]
 }
 \`\`\`
+</output_format>
 
-Signal completion with [PLAN_COMPLETE] after the JSON.`,
+<completion_signal>Signal completion with [PLAN_COMPLETE] after the JSON.</completion_signal>`,
 
-  staff: `You are the Staff Engineer Agent in Autonoma. Your role is to:
+  staff: `<role>Staff Engineer Agent in Autonoma</role>
+
+<responsibilities>
 - Receive milestones from the CEO
 - Break them into specific, actionable coding tasks
 - Group tasks into BATCHES based on dependencies
 - Tasks in the same batch that touch DIFFERENT files can run in PARALLEL
 - Tasks that depend on other tasks must be in LATER batches
+</responsibilities>
 
-CRITICAL: Organize tasks for PARALLEL EXECUTION by multiple developers.
+<critical>Organize tasks for PARALLEL EXECUTION by multiple developers.</critical>
 
-IMPORTANT: Your output should end with a JSON block containing batched tasks:
+<output_format>
+Your output MUST end with a JSON block containing batched tasks:
 \`\`\`json
 {
   "batches": [
@@ -88,32 +97,45 @@ IMPORTANT: Your output should end with a JSON block containing batched tasks:
   ]
 }
 \`\`\`
+</output_format>
 
-Rules for batching:
+<batching_rules>
 1. Tasks that create foundational files go in early batches (parallel: false)
 2. Tasks touching DIFFERENT files can be parallel: true
 3. Tasks touching the SAME files must be in different batches or parallel: false
 4. Later batches can depend on earlier batches completing
+</batching_rules>
 
-Signal completion with [TASKS_READY] after the JSON.`,
+<completion_signal>Signal completion with [TASKS_READY] after the JSON.</completion_signal>`,
 
-  developer: `You are a Developer Agent in Autonoma. Your role is to:
+  developer: `<role>Developer Agent in Autonoma</role>
+
+<responsibilities>
 - Execute the assigned coding task
 - Create or modify files as needed
 - Write clean, working code following project conventions
-- DO NOT ask for confirmation - just implement the task
 - Focus ONLY on your assigned files - other developers handle other files
+</responsibilities>
 
-You have full permission to create and edit files. Be autonomous and complete the task.
-Signal completion with [TASK_COMPLETE] when done.`,
+<permissions>You have full permission to create and edit files. Be autonomous.</permissions>
 
-  qa: `You are the QA Agent in Autonoma. Your role is to:
+<constraints>
+- DO NOT ask for confirmation - just implement the task
+- Complete the task fully before signaling completion
+</constraints>
+
+<completion_signal>Signal completion with [TASK_COMPLETE] when done.</completion_signal>`,
+
+  qa: `<role>QA Agent in Autonoma</role>
+
+<responsibilities>
 - Review the code that was written
 - Check if it meets the requirements and follows project guidelines
 - Run any tests if applicable
 - Report any issues found
+</responsibilities>
 
-Signal completion with [REVIEW_COMPLETE] and indicate PASS or FAIL.`,
+<completion_signal>Signal completion with [REVIEW_COMPLETE] and indicate PASS or FAIL.</completion_signal>`,
 };
 
 /** Tile size ratios for each role */
@@ -149,6 +171,9 @@ interface ParsedTasks {
   tasks: Array<{ id: number; title: string; description: string; files?: string[] }>;
 }
 
+/** Common project documentation files that many projects use */
+const PROJECT_DOC_FILES = ['PRD.md', 'TODO.md', 'LAST_SESSION.md', 'BACKLOG.md', 'COMPLETED_TASKS.md'];
+
 export class Orchestrator {
   private agents: Map<string, { state: AgentState; session: ClaudeSession }> = new Map();
   private tasks: Map<string, Task> = new Map();
@@ -157,6 +182,7 @@ export class Orchestrator {
   private taskIdCounter = 0;
   public currentPhase: OrchestrationPhase = 'idle';
   private projectContext: string | null = null;
+  private projectDocs: Map<string, string> = new Map();  // Stores loaded project docs
   private logDir: string;
   private stateDir: string;
   private statePath: string;
@@ -351,6 +377,33 @@ export class Orchestrator {
       this.projectContext = null;
       return null;
     }
+  }
+
+  /**
+   * Load common project documentation files (PRD.md, TODO.md, etc.)
+   * These are commonly used in projects to provide context
+   */
+  async loadProjectDocs(): Promise<Map<string, string>> {
+    this.projectDocs.clear();
+
+    for (const fileName of PROJECT_DOC_FILES) {
+      const filePath = join(this.workingDir, fileName);
+      try {
+        const content = await readFile(filePath, 'utf-8');
+        this.projectDocs.set(fileName, content);
+      } catch {
+        // File doesn't exist, skip it
+      }
+    }
+
+    return this.projectDocs;
+  }
+
+  /**
+   * Get loaded project docs
+   */
+  getProjectDocs(): Map<string, string> {
+    return this.projectDocs;
   }
 
   /**
@@ -599,27 +652,43 @@ export class Orchestrator {
   }
 
   /**
-   * Build the context section for prompts
+   * Build the context section for prompts using XML structure
+   * Includes CLAUDE.md and any project documentation files found
    */
   private buildContextSection(): string {
-    if (!this.projectContext) {
+    const sections: string[] = [];
+
+    // Add CLAUDE.md if present
+    if (this.projectContext) {
+      sections.push(`<project_guidelines>
+<source>CLAUDE.md</source>
+<instructions>Follow these guidelines when planning and implementing.</instructions>
+<content>
+${this.projectContext}
+</content>
+</project_guidelines>`);
+    }
+
+    // Add project documentation files if present
+    if (this.projectDocs.size > 0) {
+      const docSections: string[] = [];
+      for (const [fileName, content] of this.projectDocs) {
+        docSections.push(`<document name="${fileName}">
+${content}
+</document>`);
+      }
+
+      sections.push(`<project_documentation>
+<description>Existing project documentation found in the codebase.</description>
+${docSections.join('\n')}
+</project_documentation>`);
+    }
+
+    if (sections.length === 0) {
       return '';
     }
 
-    return `
-## Project Context (from CLAUDE.md)
-
-The following guidelines and context have been provided for this project:
-
-<project-context>
-${this.projectContext}
-</project-context>
-
-Please follow these guidelines when planning and implementing.
-
----
-
-`;
+    return sections.join('\n\n') + '\n\n';
   }
 
   /**
@@ -639,7 +708,7 @@ Please follow these guidelines when planning and implementing.
   }
 
   /**
-   * Load and format context files for adopt prompts
+   * Load and format context files for adopt prompts using XML structure
    */
   private async loadContextFiles(contextFiles: string[]): Promise<string> {
     if (contextFiles.length === 0) return '';
@@ -649,7 +718,9 @@ Please follow these guidelines when planning and implementing.
       try {
         const content = await readFile(filePath, 'utf-8');
         const fileName = filePath.split('/').pop() || filePath;
-        sections.push(`### ${fileName}\n\`\`\`\n${content}\n\`\`\``);
+        sections.push(`<file name="${fileName}">
+${content}
+</file>`);
       } catch {
         // Skip files that can't be read
       }
@@ -657,15 +728,15 @@ Please follow these guidelines when planning and implementing.
 
     if (sections.length === 0) return '';
 
-    return `
-## Pre-provided Context Files
-
-The user has provided the following files to help you understand the codebase structure.
-Use this information to SKIP redundant exploration - trust this context and only verify critical areas.
-
-${sections.join('\n\n')}
-
----
+    return `<user_provided_context>
+<instructions>
+Use this information to SKIP redundant exploration.
+Trust this context and only verify critical areas.
+</instructions>
+<files>
+${sections.join('\n')}
+</files>
+</user_provided_context>
 
 `;
   }
@@ -677,6 +748,7 @@ ${sections.join('\n\n')}
   async adoptProject(requirementsPath: string, contextFiles: string[] = []): Promise<void> {
     await this.initDirs();
     await this.loadProjectContext();
+    await this.loadProjectDocs();
 
     // Load requirements content
     const requirements = await this.loadRequirements(requirementsPath);
@@ -693,6 +765,10 @@ ${sections.join('\n\n')}
     if (contextFiles.length > 0) {
       this.events.onAgentOutput(ceoAgent.state.config.id, `[ADOPT] Using ${contextFiles.length} context file(s) to guide analysis...`);
     }
+    if (this.projectDocs.size > 0) {
+      const docNames = Array.from(this.projectDocs.keys()).join(', ');
+      this.events.onAgentOutput(ceoAgent.state.config.id, `[ADOPT] Found project docs: ${docNames}`);
+    }
     this.events.onAgentOutput(ceoAgent.state.config.id, '[ADOPT] Analyzing existing project...');
 
     // Ask CEO to analyze what exists and create a plan for remaining work
@@ -701,26 +777,30 @@ ${sections.join('\n\n')}
     // Build prompt with context-aware instructions
     const hasContext = userContextSection.length > 0;
     const analysisInstructions = hasContext
-      ? `Please:
-1. Use the provided context files to understand the codebase structure
-2. Only verify critical implementation details - trust the context for structure
-3. Identify what has already been implemented based on the context
-4. Create a plan for the REMAINING work only
-5. Output milestones for what still needs to be done`
-      : `Please:
-1. Analyze the current state of the codebase
-2. Identify what has already been implemented
-3. Create a plan for the REMAINING work only
-4. Output milestones for what still needs to be done`;
+      ? `<instructions>
+<step>Use the provided context files to understand the codebase structure</step>
+<step>Only verify critical implementation details - trust the context for structure</step>
+<step>Identify what has already been implemented based on the context</step>
+<step>Create a plan for the REMAINING work only</step>
+<step>Output milestones for what still needs to be done</step>
+</instructions>`
+      : `<instructions>
+<step>Analyze the current state of the codebase</step>
+<step>Identify what has already been implemented</step>
+<step>Create a plan for the REMAINING work only</step>
+<step>Output milestones for what still needs to be done</step>
+</instructions>`;
 
-    const adoptPrompt = `${userContextSection}${projectContextSection}You are adopting an existing project that may have partial implementation.
+    const adoptPrompt = `${userContextSection}${projectContextSection}<task>Adopt an existing project that may have partial implementation.</task>
 
-Requirements for the full project:
+<requirements>
 ${requirements}
+</requirements>
 
 ${analysisInstructions}
 
-IMPORTANT: Your output should end with a JSON block containing the plan for remaining work:
+<output_format>
+Your output MUST end with a JSON block containing the plan for remaining work:
 \`\`\`json
 {
   "milestones": [
@@ -729,8 +809,9 @@ IMPORTANT: Your output should end with a JSON block containing the plan for rema
   ]
 }
 \`\`\`
+</output_format>
 
-Signal completion with [PLAN_COMPLETE] after the JSON.`;
+<completion_signal>Signal completion with [PLAN_COMPLETE] after the JSON.</completion_signal>`;
 
     this.setPhase('planning');
     const output = await this.startAgent(ceoAgent.state.config.id, adoptPrompt);
@@ -767,6 +848,9 @@ Signal completion with [PLAN_COMPLETE] after the JSON.`;
     if (state.hasProjectContext) {
       await this.loadProjectContext();
     }
+
+    // Load project documentation files
+    await this.loadProjectDocs();
 
     // Load requirements content from file
     const requirements = await this.loadRequirements(state.requirementsPath);
@@ -825,10 +909,16 @@ Signal completion with [PLAN_COMPLETE] after the JSON.`;
     if (this.projectContext) {
       this.events.onAgentOutput(ceoAgent.state.config.id, '[INFO] Found CLAUDE.md - using project context for planning');
     }
+    if (this.projectDocs.size > 0) {
+      const docNames = Array.from(this.projectDocs.keys()).join(', ');
+      this.events.onAgentOutput(ceoAgent.state.config.id, `[INFO] Found project docs: ${docNames}`);
+    }
 
-    const ceoPrompt = `${contextSection}Please analyze these requirements and create a development plan:
+    const ceoPrompt = `${contextSection}<task>Analyze requirements and create a development plan.</task>
 
-${requirements}`;
+<requirements>
+${requirements}
+</requirements>`;
 
     const ceoOutput = await this.startAgent(ceoAgent.state.config.id, ceoPrompt);
     await this.saveAgentLog('ceo', ceoOutput);
@@ -863,17 +953,25 @@ ${requirements}`;
     const plan = this.persistedState?.plan;
 
     const milestoneText = plan?.milestones
-      ? plan.milestones.map(m => `- ${m.title}: ${m.description}`).join('\n')
-      : `Based on these requirements:\n${requirements}`;
+      ? plan.milestones.map(m => `<milestone id="${m.id}">${m.title}: ${m.description}</milestone>`).join('\n')
+      : `<fallback>Based on requirements directly</fallback>\n${requirements}`;
 
-    const staffPrompt = `${contextSection}Break down these milestones into specific coding tasks.
-We have ${this.maxDevelopers} developer agents available to work IN PARALLEL.
+    const staffPrompt = `${contextSection}<task>Break down milestones into specific coding tasks.</task>
 
-Milestones:
+<context>
+<available_developers>${this.maxDevelopers}</available_developers>
+<execution_mode>PARALLEL - developers work simultaneously</execution_mode>
+</context>
+
+<milestones>
 ${milestoneText}
+</milestones>
 
-Group tasks into batches. Tasks in parallel batches will be executed simultaneously by different developers.
-Ensure tasks in parallel batches touch DIFFERENT files to avoid conflicts.`;
+<instructions>
+<step>Group tasks into batches</step>
+<step>Tasks in parallel batches will be executed simultaneously by different developers</step>
+<step>Ensure tasks in parallel batches touch DIFFERENT files to avoid conflicts</step>
+</instructions>`;
 
     const staffOutput = await this.startAgent(staffAgent.state.config.id, staffPrompt);
     await this.saveAgentLog('staff', staffOutput);
@@ -925,11 +1023,13 @@ Ensure tasks in parallel batches touch DIFFERENT files to avoid conflicts.`;
       const task = this.createTask('Implement requirements', devAgent.state.config.id);
       this.updateTaskStatus(task.id, 'running');
 
-      const devPrompt = `${contextSection}Implement these requirements directly:
+      const devPrompt = `${contextSection}<task>Implement requirements directly (no task breakdown available).</task>
 
+<requirements>
 ${requirements}
+</requirements>
 
-Create the necessary files and code.`;
+<instructions>Create the necessary files and code to fulfill the requirements.</instructions>`;
 
       const devOutput = await this.startAgent(devAgent.state.config.id, devPrompt);
       await this.saveAgentLog('developer', devOutput);
@@ -1009,15 +1109,19 @@ Create the necessary files and code.`;
         this.events.onAgentOutput(developer.state.config.id,
           `[PARALLEL] Task ${devTask.id}: ${devTask.title}`);
 
-        const devPrompt = `${contextSection}Execute this task:
+        const devPrompt = `${contextSection}<task>
+<id>${devTask.id}</id>
+<title>${devTask.title}</title>
+<description>${devTask.description}</description>
+${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
+</task>
 
-Title: ${devTask.title}
-Description: ${devTask.description}
-${devTask.files ? `Files to create/modify: ${devTask.files.join(', ')}` : ''}
+<execution_context>
+<mode>PARALLEL</mode>
+<constraint>Focus ONLY on the files listed above. Other developers are working on other files simultaneously.</constraint>
+</execution_context>
 
-IMPORTANT: Focus ONLY on the files listed above. Other developers are working on other files simultaneously.
-
-Implement this now. Create the necessary files.`;
+<instructions>Implement this task now. Create the necessary files.</instructions>`;
 
         try {
           const devOutput = await this.startAgent(developer.state.config.id, devPrompt);
@@ -1062,13 +1166,18 @@ Implement this now. Create the necessary files.`;
       this.events.onAgentOutput(developer.state.config.id,
         `[SEQUENTIAL] Task ${devTask.id}: ${devTask.title}`);
 
-      const devPrompt = `${contextSection}Execute this task:
+      const devPrompt = `${contextSection}<task>
+<id>${devTask.id}</id>
+<title>${devTask.title}</title>
+<description>${devTask.description}</description>
+${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
+</task>
 
-Title: ${devTask.title}
-Description: ${devTask.description}
-${devTask.files ? `Files to create/modify: ${devTask.files.join(', ')}` : ''}
+<execution_context>
+<mode>SEQUENTIAL</mode>
+</execution_context>
 
-Implement this now. Create the necessary files.`;
+<instructions>Implement this task now. Create the necessary files.</instructions>`;
 
       try {
         const devOutput = await this.startAgent(developer.state.config.id, devPrompt);
@@ -1098,11 +1207,17 @@ Implement this now. Create the necessary files.`;
     this.updateTaskStatus(reviewTask.id, 'running');
 
     const contextSection = this.buildContextSection();
-    const qaPrompt = `${contextSection}Review the code that was just created. Check if it meets these requirements:
+    const qaPrompt = `${contextSection}<task>Review the code that was just created.</task>
 
+<requirements>
 ${requirements}
+</requirements>
 
-List the files that were created and verify they work correctly.`;
+<instructions>
+<step>List the files that were created</step>
+<step>Verify they work correctly</step>
+<step>Check if implementation meets the requirements</step>
+</instructions>`;
 
     const qaOutput = await this.startAgent(qaAgent.state.config.id, qaPrompt);
     await this.saveAgentLog('qa', qaOutput);
@@ -1119,6 +1234,7 @@ List the files that were created and verify they work correctly.`;
   async start(requirementsPath: string): Promise<void> {
     await this.initDirs();
     await this.loadProjectContext();
+    await this.loadProjectDocs();
 
     // Load requirements content
     const requirements = await this.loadRequirements(requirementsPath);

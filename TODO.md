@@ -1,7 +1,7 @@
 # TODO - Development Priorities
 
-**Last Updated:** December 16, 2025 (Session 6)
-**Current Focus:** TUI Improvements & Adopt Feature
+**Last Updated:** December 16, 2025 (Session 7)
+**Current Focus:** XML Prompt Structuring & Project Doc Detection
 **Project Status:** Production Ready
 **Stack:** TypeScript, Bun, blessed (TUI)
 
@@ -11,11 +11,11 @@
 
 | Task | Status |
 |------|--------|
-| Tasks view shows ALL batch tasks (including pending) | DONE |
-| Tasks panel title shows progress "Tasks N/TOTAL" | DONE |
-| Adopt command supports --context flag for context files | DONE |
-| Context files reduce token usage on large codebases | DONE |
-| Added realproject/ to .gitignore | DONE |
+| Refactor all agent prompts to use XML tags for better structure | DONE |
+| Add project documentation detection (PRD.md, TODO.md, etc.) | DONE |
+| Include detected docs in agent prompts with XML structure | DONE |
+| Update buildContextSection to use XML format | DONE |
+| Update loadContextFiles to use XML format | DONE |
 
 ---
 
