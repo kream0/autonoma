@@ -138,16 +138,24 @@ State includes:
 
 ## Complexity-Aware Allocation
 
-The Staff Engineer analyzes task complexity and recommends optimal parallelism:
+The Staff Engineer analyzes task complexity to prevent context overflow:
 
-| Complexity | Description | Guidance |
-|------------|-------------|----------|
-| `simple` | Single file, ~5-50 lines | Full parallelism (6 devs) |
-| `moderate` | 1-3 files, ~50-200 lines | Full parallelism |
-| `complex` | Multiple files, ~200-500 lines | Reduced (3-4 devs) |
-| `very_complex` | Architectural, extensive context | Minimal (1-2 devs) |
+| Complexity | Description |
+|------------|-------------|
+| simple | Single file, ~5-50 lines |
+| moderate | 1-3 files, ~50-200 lines |
+| complex | Multiple files, ~200-500 lines |
+| very_complex | Architectural, extensive context |
 
-Each task also receives a `context` field with task-specific guidance for developers, and batches with complex tasks use `maxParallelTasks` to prevent context overflow.
+Based on the task mix, Staff Engineer recommends parallel developers:
+
+| Task Mix | Recommended Developers |
+|----------|------------------------|
+| All simple/moderate | Up to 6 (full parallelism) |
+| Mix with complex | 3-4 developers |
+| Mostly complex/very_complex | 1-2 developers |
+
+Each task receives a `context` field with task-specific guidance, and batches with complex tasks use `maxParallelTasks` to limit concurrency.
 
 ## Development
 
