@@ -1,0 +1,24 @@
+{
+  "name": "autonoma",
+  "version": "0.1.0",
+  "description": "Orchestrate multiple Claude Code instances with a split-tile TUI",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "autonoma": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/blessed": "^0.1.27",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "blessed": "^0.1.81"
+  }
+}

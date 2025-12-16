@@ -1,267 +1,165 @@
 # Autonoma
 
-**Autonomous Agentic Orchestration for Software Development**
+A CLI tool that orchestrates multiple Claude Code instances with a hierarchical agent organization, displayed in a split-tile terminal interface.
 
-Autonoma is a "software company in a box" that leverages multiple instances of Claude Code (the Anthropic CLI) to autonomously plan, implement, test, and deploy codebases from high-level requirements.
+## Overview
 
-## Features
+Autonoma enables faster development by running multiple Claude Code agents in parallel:
 
-- **Hierarchical Agent System**: CEO (planning), Staff Engineer (architecture), Developers (implementation), QA (review)
-- **Parallel Execution**: Multiple developer agents working on independent tasks simultaneously
-- **Git Worktree Integration**: Isolated development environments for each task
-- **Smart Retry Logic**: Automatic error recovery with escalation paths
-- **Real-time TUI Dashboard**: Rich terminal interface showing progress, logs, and agent status
-- **Desktop Application**: Cross-platform GUI via Electrobun (macOS, Windows, Linux)
+- **CEO Agent** - Creates high-level plan from requirements
+- **Staff Engineer** - Breaks plan into batched tasks
+- **Developer Agents** (3x) - Execute tasks in parallel
+- **QA Agent** - Reviews completed work
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         CEO Agent                           │
-│              (Planning & Decomposition)                     │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Staff Engineer Agent                      │
-│            (Technical Architecture & Tasks)                 │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│ Developer 1 │   │ Developer 2 │   │ Developer N │
-│  (Worker)   │   │  (Worker)   │   │  (Worker)   │
-└──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-       │                 │                 │
-       └────────────────┬┴─────────────────┘
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       QA Agent                              │
-│              (Review, Test & Merge)                         │
-└─────────────────────────────────────────────────────────────┘
-```
+All agents are visible simultaneously in a split-tile TUI, with keyboard navigation similar to a video call interface.
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.12+
-- Claude Code CLI (`claude`)
-- Git
-- Bun (for desktop build only)
-
-### Install from source
-
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/autonoma.git
+git clone https://github.com/yourusername/autonoma.git
 cd autonoma
 
 # Install dependencies
-pip install -e .
+bun install
 
-# Or with development dependencies
-pip install -e ".[dev]"
+# Run
+bun run dev <command>
 ```
 
-## Quick Start
+Requires:
+- [Bun](https://bun.sh) runtime
+- [Claude Code CLI](https://claude.ai/claude-code) installed and authenticated
 
-### 1. Initialize a project
+## Usage
+
+### Start New Project
 
 ```bash
-cd your-project
-autonoma init
+bun run dev start requirements.md
 ```
 
-This creates the `.autonoma/` directory with:
-- `CLAUDE.md` - Project standards for all agents
-- `state.db` - SQLite database for tracking
-- `logs/` - Agent session logs
-- `worktrees/` - Git worktrees for parallel development
+Creates a fresh orchestration from a requirements file. State is saved to `.autonoma/state.json` for resume capability.
 
-### 2. Create requirements
-
-Create a `requirements.md` file describing what you want to build:
-
-```markdown
-# My API Project
-
-## Overview
-Build a REST API for a todo application.
-
-## Features
-- User authentication (JWT)
-- CRUD operations for todos
-- PostgreSQL database
-- API documentation
-
-## Tech Stack
-- Node.js with Express
-- TypeScript
-- Jest for testing
-```
-
-### 3. Start Autonoma
+### Resume Project
 
 ```bash
-# With TUI dashboard (default)
-autonoma start requirements.md
-
-# Without TUI
-autonoma start requirements.md --no-tui
-
-# With more parallel workers
-autonoma start requirements.md --max-workers 8
+bun run dev resume /path/to/project
 ```
 
-## CLI Commands
+Continue from the last checkpoint. Skips completed phases automatically.
+
+### Adopt Existing Project
 
 ```bash
-# Initialize Autonoma in a project
-autonoma init
-
-# Start autonomous development
-autonoma start <requirements.md> [--tui/--no-tui] [--max-workers N]
-
-# Open monitoring dashboard
-autonoma dashboard
-
-# Check current status
-autonoma status
-
-# View logs
-autonoma logs [--agent AGENT_ID] [--limit N]
-
-# Clean up state and worktrees
-autonoma clean
-
-# Build desktop application
-autonoma build-desktop [--platform darwin|win32|linux|all]
+bun run dev adopt requirements.md
 ```
 
-## Configuration
+Analyze an existing codebase, identify what's implemented, and plan remaining work.
 
-Autonoma can be configured via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTONOMA_CLAUDE_MODEL` | `claude-opus-4-5-20251101` | Model to use for all agents |
-| `AUTONOMA_MAX_WORKERS` | `5` | Maximum parallel developer agents |
-| `AUTONOMA_MAX_RETRIES` | `3` | Retry attempts before escalation |
-| `AUTONOMA_TASK_TIMEOUT` | `600` | Task timeout in seconds |
-| `AUTONOMA_DANGEROUSLY_SKIP_PERMISSIONS` | `false` | Skip Claude Code permissions |
-
-## How It Works
-
-1. **Planning Phase**: The CEO agent analyzes your requirements and creates a `plan.json` with milestones and task breakdowns.
-
-2. **Decomposition Phase**: The Staff Engineer converts milestones into specific technical tasks, identifying dependencies and parallelizable work.
-
-3. **Execution Phase**: Developer agents are spawned to work on tasks in parallel, each in their own git worktree.
-
-4. **Review Phase**: The QA agent reviews completed work, runs tests, and merges approved changes.
-
-5. **Iteration**: Failed tasks are retried with feedback. Blocked tasks are escalated for human review.
-
-## Desktop Application
-
-Build the desktop GUI:
+For large codebases, provide context files to save tokens:
 
 ```bash
-# Build for all platforms
-make desktop
-
-# Or specific platform
-make desktop-mac
-make desktop-win
-make desktop-linux
+bun run dev adopt requirements.md --context STRUCTURE.md,ARCHITECTURE.md
 ```
 
-The desktop app provides:
-- Visual dashboard for monitoring
-- Native system tray integration
-- File browser for requirements
-- Real-time log streaming
+Context files can contain folder structure, architecture docs, or implementation status.
+
+### Demo Mode
+
+```bash
+bun run dev demo
+```
+
+Run with mock agents to test the UI.
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `↑↓←→` or `hjkl` | Navigate between tiles |
+| `Enter` | Focus (maximize) selected tile |
+| `Escape` | Return to split view / Close overlay |
+| `t` | Task list view |
+| `s` | Stats view |
+| `d` | Dashboard view |
+| `q` | Quit |
+
+## Views
+
+### Split Tiles (Default)
+
+```
++------------------+------------+-----+
+|                  |            |     |
+|      CEO         |   Staff    | Dev |
+|     (40%)        |   (30%)    |(15%)|
+|                  |            +-----+
+|                  |            | QA  |
+|                  |            |(15%)|
++------------------+------------+-----+
+```
+
+### Task List (`t`)
+
+Shows all tasks across batches with status:
+- `○` Pending (gray)
+- `◐` Running (yellow)
+- `●` Complete (green)
+- `✗` Failed (red)
+
+Title shows progress: "Tasks 18/86"
+
+### Stats (`s`)
+
+Session duration, token usage per agent, overall progress.
+
+### Dashboard (`d`)
+
+Overview of all agents with token usage and cost breakdown.
+
+## State & Logs
+
+- **State:** `<project>/.autonoma/state.json`
+- **Logs:** `<project>/.autonoma/logs/`
+
+State includes:
+- Requirements path
+- Plan from CEO
+- Task batches from Staff Engineer
+- Current progress
+- Completed phases
 
 ## Development
 
 ```bash
-# Install dev dependencies
-make dev
+# Type check
+bun run typecheck
 
-# Run tests
-make test
+# Build
+bun run build
 
-# Lint code
-make lint
-
-# Format code
-make format
+# Run production build
+bun run start
 ```
 
-## Project Structure
+## Architecture
 
 ```
-autonoma/
-├── autonoma/
-│   ├── agents/          # Agent implementations
-│   │   ├── base.py      # Base agent class
-│   │   ├── ceo.py       # CEO (planning) agent
-│   │   ├── developer.py # Developer (worker) agents
-│   │   ├── qa.py        # QA (review) agent
-│   │   └── staff_engineer.py
-│   ├── core/            # Core functionality
-│   │   ├── config.py    # Configuration
-│   │   ├── orchestrator.py  # Main orchestration
-│   │   ├── state.py     # SQLite state management
-│   │   └── wrapper.py   # Claude Code PTY wrapper
-│   ├── tui/             # Terminal UI
-│   │   ├── app.py       # Textual application
-│   │   └── dashboard.py # Dashboard widgets
-│   ├── desktop/         # Desktop integration
-│   │   └── server.py    # WebSocket server
-│   └── cli.py           # CLI commands
-├── desktop/             # Electrobun desktop app
-│   ├── src/
-│   ├── public/
-│   └── package.json
-├── tests/
-├── pyproject.toml
-└── README.md
+src/
+├── index.ts          # CLI entry point
+├── types.ts          # Type definitions
+├── session.ts        # Claude Code subprocess wrapper
+├── orchestrator.ts   # Agent hierarchy & execution
+└── tui/
+    ├── screen.ts     # Blessed screen + keybindings
+    ├── tiles.ts      # Split-tile layout
+    └── views/
+        ├── tasks.ts      # Task list
+        ├── stats.ts      # Statistics
+        └── dashboard.ts  # Agent overview
 ```
-
-## Safety & Guardrails
-
-Autonoma incorporates several safety measures:
-
-- **Sandboxed Execution**: Each agent runs in isolated environments
-- **No Remote Push**: Agents cannot push to remote repositories
-- **Rate Limiting**: Respects Claude API rate limits with exponential backoff
-- **Human Escalation**: Blocked or failed tasks require human review
-- **Audit Logging**: All agent actions are logged for review
-
-## Troubleshooting
-
-### Common Issues
-
-**"Claude Code not found"**
-- Ensure `claude` CLI is installed and in your PATH
-- Run `claude --version` to verify
-
-**"Rate limit exceeded"**
-- Reduce `--max-workers` to decrease parallel requests
-- Check your Claude API subscription limits
-
-**"Task failed after retries"**
-- Check logs with `autonoma logs --agent <agent-id>`
-- Review the task in `plan.json` for clarity
-- Manually complete the task or provide more context
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-Contributions welcome! Please read CONTRIBUTING.md for guidelines.
+MIT

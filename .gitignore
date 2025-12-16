@@ -1,52 +1,37 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# Dependencies
+node_modules/
 
-# Virtual environments
-venv/
-ENV/
-env/
-.venv/
+# Build output
+dist/
+
+# Bun
+bun.lockb
+
+# Environment
+.env
+.env.local
+.env.*.local
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-
-# Project specific
-*.db
-*.sqlite
-*.log
-.autonoma/
-fakeproject/
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+
+# Debug
+debug/
+
+# Test projects
+realproject/
