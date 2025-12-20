@@ -71,6 +71,50 @@ bun run dev adopt requirements.md --context STRUCTURE.md,ARCHITECTURE.md
 
 Context files can contain folder structure, architecture docs, or implementation status.
 
+### Indefinite Mode
+
+```bash
+bun run dev start requirements.md --indefinite
+```
+
+Run autonomously until project is 100% complete. Features:
+- Continuous dev → test → QA → CEO approval loop
+- Context window monitoring with automatic agent handoff
+- Health monitoring with crash recovery
+- User guidance mid-run (see below)
+
+Combine with stdout mode for headless operation:
+
+```bash
+bun run dev start requirements.md --indefinite --stdout
+```
+
+### Stdout Mode
+
+```bash
+bun run dev start requirements.md --stdout
+```
+
+Headless operation with plain-text output instead of TUI. Automatically logs session to `.autonoma/logs/session-{timestamp}.log`. Ideal for:
+- Long-running tasks in tmux/screen
+- CI/CD pipelines
+- Low-bandwidth connections
+
+### Session Logging
+
+```bash
+# Stdout mode: automatic logging
+bun run dev start requirements.md --stdout
+
+# TUI mode: optional logging
+bun run dev start requirements.md --log
+```
+
+Logs saved to `.autonoma/logs/session-{timestamp}.log` with format:
+```
+[MM:SS] [AGENT/STATUS] message
+```
+
 ### Demo Mode
 
 ```bash
@@ -89,7 +133,22 @@ Run with mock agents to test the UI.
 | `t` | Task list view |
 | `s` | Stats view |
 | `d` | Dashboard view |
+| `p` | Pause & provide guidance (indefinite mode) |
 | `q` | Quit |
+
+## User Guidance
+
+In indefinite mode, you can provide guidance to redirect the project:
+
+**TUI Mode:** Press `p` to pause, type guidance, press Enter to submit.
+
+**Stdout Mode:** Type guidance and press Enter at any time. Example:
+```bash
+# While running, type:
+Also add error handling to the API endpoints
+```
+
+The CEO will replan based on your guidance and continue execution.
 
 ## Views
 
@@ -174,13 +233,18 @@ bun run start
 
 ```
 src/
-├── index.ts          # CLI entry point
-├── types.ts          # Type definitions
-├── session.ts        # Claude Code subprocess wrapper
-├── orchestrator.ts   # Agent hierarchy & execution
+├── index.ts            # CLI entry point, App classes
+├── types.ts            # Type definitions
+├── session.ts          # Claude Code subprocess wrapper
+├── orchestrator.ts     # Agent hierarchy & execution
+├── indefinite.ts       # IndefiniteLoopController
+├── context-monitor.ts  # Context window monitoring
+├── handoff.ts          # Agent handoff block parsing
+├── queue.ts            # Work-stealing task queue
+├── watchdog.ts         # Health monitoring
 └── tui/
-    ├── screen.ts     # Blessed screen + keybindings
-    ├── tiles.ts      # Split-tile layout
+    ├── screen.ts       # Blessed screen + keybindings
+    ├── tiles.ts        # Split-tile layout
     └── views/
         ├── tasks.ts      # Task list
         ├── stats.ts      # Statistics
