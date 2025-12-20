@@ -34,6 +34,7 @@ const ROLE_COLORS: Record<AgentRole, string> = {
   staff: 'cyan',
   developer: 'green',
   qa: 'magenta',
+  e2e: 'blue',
 };
 
 export class TileManager {

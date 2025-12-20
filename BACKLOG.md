@@ -1,11 +1,28 @@
 # Development Backlog
 
 **Purpose:** Long-term and future enhancement tasks
-**Last Updated:** December 17, 2025 (Session 9)
+**Last Updated:** December 20, 2025 (Session 26)
 
 ---
 
 ## RECENTLY COMPLETED (Moved from Backlog)
+
+### Session Logging (Sessions 25-26)
+- `--stdout` auto-logs to `.autonoma/logs/session-{timestamp}.log` → **DONE**
+- `--log` flag for TUI mode → **DONE**
+- Log format `[MM:SS] [AGENT/STATUS] message` → **DONE**
+- User guidance captured in logs → **DONE**
+- Race condition bug fix in `flushLog()` → **DONE**
+
+### Indefinite Autonomous Run Mode (Session 22)
+- `--indefinite` CLI flag → **DONE**
+- Context window monitoring (50/60/70/80%) → **DONE**
+- XML handoff block parsing → **DONE**
+- Agent replacement with handoff injection → **DONE**
+- Health monitoring (exit, timeout, errors) → **DONE**
+- Watchdog system → **DONE**
+- Browser project detection for E2E → **DONE**
+- Pause keybinding (`p`) → **DONE**
 
 ### Session Persistence
 - Save session state on exit → **DONE**
@@ -26,6 +43,39 @@
 ---
 
 ## ACTIVE DEVELOPMENT (Next Sessions)
+
+### Indefinite Mode: Core Testing Complete
+**Priority:** HIGH
+**Status:** Core Flow Verified Working (Session 24)
+
+**Completed Wiring (Session 23):**
+- [x] Connect IndefiniteLoopController.run() to orchestrator phases
+- [x] Add `runInitialPhases()` and `runOneCycle()` to orchestrator
+- [x] Wire controller execution in index.ts (TUI + Stdout)
+- [x] TypeScript compiles with no errors
+
+**Testing Completed (Session 24):**
+- [x] Test with simple project (Hello Autonoma) - PASSED
+- [x] Loop iteration messages verified: `[INDEFINITE/LOOP] Iteration 1`
+- [x] Parallel developer execution verified (work-stealing queue)
+- [x] Complexity-aware allocation verified
+
+**User Guidance System (Session 24):**
+- [x] Implement user input capture when paused (textbox overlay)
+- [x] CEO processes user guidance and adjusts plan
+
+**Session Logging (Session 25-26):**
+- [x] Implemented `--stdout` auto-logging
+- [x] Implemented `--log` flag for TUI mode
+- [x] Fixed race condition in `flushLog()` causing duplicates
+- [x] Tested user guidance capture in logs
+
+**Remaining Tasks:**
+- [ ] Test TUI mode (status bar, pause keybinding, textbox overlay)
+- [ ] Test with medium complexity project
+- [ ] Add E2E agent spawning when browser project detected
+
+---
 
 ### UX Enhancement: Show Developer Idle Reason
 **Priority:** LOW
@@ -192,5 +242,5 @@ Items move from BACKLOG to TODO when:
 
 ---
 
-**Last Review:** December 20, 2025
+**Last Review:** December 20, 2025 (Session 26)
 

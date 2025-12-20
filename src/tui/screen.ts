@@ -13,6 +13,7 @@ export interface ScreenEvents {
   onNavigate: (direction: 'up' | 'down' | 'left' | 'right') => void;
   onFocus: () => void;
   onUnfocus: () => void;
+  onPause?: () => void;  // For indefinite mode
 }
 
 export class Screen {
@@ -97,6 +98,13 @@ export class Screen {
     this.screen.key(['d'], () => {
       if (!this.isFocused) {
         this.setView('dashboard');
+      }
+    });
+
+    // Pause (for indefinite mode)
+    this.screen.key(['p'], () => {
+      if (!this.isFocused && this.events.onPause) {
+        this.events.onPause();
       }
     });
   }

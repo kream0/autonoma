@@ -15,15 +15,24 @@ This step is non-negotiable for maintaining project continuity.
 
 ## SESSION END PROTOCOL
 
-**CRITICAL: NEVER STOP HALFWAY THROUGH A TASK**
+**CRITICAL: ALWAYS RESERVE 15K TOKENS FOR HANDOFF**
 
-Complete the current atomic task before stopping. Never leave work broken or incomplete.
+Monitor context usage throughout the session. When approaching 15k tokens remaining:
+1. **STOP** - Do not start new tasks
+2. **UPDATE** - Update all tracking files for the next agent
+3. **HANDOFF** - Ensure continuity for the next session
+
+**Context Management Rules:**
+- Check `/context` regularly during long sessions
+- If a task will exceed available context → stop BEFORE starting it
+- Never let context run out mid-task
+- 15k tokens minimum reserved for documentation updates
 
 **Stopping is ONLY allowed when ALL THREE conditions are met:**
 
 1. **Current task is FULLY COMPLETE** - 100% done and working
 2. **The code doesn't break** - No errors, everything runs
-3. **Enough context to update docs** - ~15-20k tokens remaining
+3. **At least 15k tokens remaining** - Enough to update tracking files
 
 **When stopping, update:**
 
@@ -172,4 +181,4 @@ bun run typecheck
 
 ---
 
-**Version:** 2.0 (December 15, 2025)
+**Version:** 2.1 (December 17, 2025)

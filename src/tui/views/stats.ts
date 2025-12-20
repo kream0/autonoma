@@ -69,9 +69,8 @@ export class StatsView {
 
     // Token totals
     const totalTokens = agents.reduce((sum, a) => sum + a.tokenUsage.inputTokens + a.tokenUsage.outputTokens, 0);
-    const totalCost = agents.reduce((sum, a) => sum + a.tokenUsage.totalCostUsd, 0);
     if (totalTokens > 0) {
-      lines.push(`{bold}Tokens:{/bold} ${totalTokens.toLocaleString()} total | {bold}Cost:{/bold} $${totalCost.toFixed(4)}`);
+      lines.push(`{bold}Tokens:{/bold} ${totalTokens.toLocaleString()} total`);
       lines.push('');
     }
 
@@ -88,7 +87,6 @@ export class StatsView {
       lines.push(`    Messages: ${agent.output.length}`);
       if (tokens > 0) {
         lines.push(`    Tokens: ${tokens.toLocaleString()} (in: ${agent.tokenUsage.inputTokens.toLocaleString()}, out: ${agent.tokenUsage.outputTokens.toLocaleString()})`);
-        lines.push(`    Cost: $${agent.tokenUsage.totalCostUsd.toFixed(4)}`);
       }
       lines.push('');
     }

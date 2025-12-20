@@ -3,7 +3,13 @@
  */
 
 /** Agent roles in the hierarchy */
-export type AgentRole = 'ceo' | 'staff' | 'developer' | 'qa';
+export type AgentRole = 'ceo' | 'staff' | 'developer' | 'qa' | 'e2e';
+
+/** Context threshold levels for awareness injection */
+export type ContextThreshold = 50 | 60 | 70 | 80;
+
+/** Watchdog decision types */
+export type WatchdogDecision = 'respawn' | 'inject_guidance' | 'continue' | 'escalate_to_user';
 
 /** Agent status */
 export type AgentStatus = 'idle' | 'running' | 'complete' | 'error';
@@ -102,7 +108,9 @@ export type OrchestrationPhase =
   | 'planning'      // CEO analyzing requirements
   | 'task-breakdown' // Staff breaking into tasks
   | 'development'   // Developer(s) implementing
+  | 'testing'       // Running automated tests
   | 'review'        // QA reviewing
+  | 'ceo-approval'  // CEO final approval
   | 'complete'
   | 'failed';
 
@@ -116,6 +124,10 @@ export interface DevTask {
   assignedTo?: string;  // Developer agent ID
   complexity?: TaskComplexity;  // Task complexity for context estimation
   context?: string;  // Task-specific context for the developer
+  // Retry tracking (for QA feedback loop)
+  retryCount?: number;  // Number of retry attempts (default 0)
+  lastFailureReason?: string;  // QA's reason for failure
+  maxRetries?: number;  // Max retry attempts (default 2)
 }
 
 /** Batch of tasks that can be executed together */
@@ -159,4 +171,74 @@ export interface PersistedState {
 
   // Number of parallel developers to use
   maxDevelopers: number;
+
+  // Phase outputs for CEO approval (stored for resume)
+  lastTestOutput?: string[];
+  lastQaOutput?: string[];
+  ceoApprovalAttempts?: number;
+  ceoFeedback?: string;  // CEO's feedback if rejected
+
+  // Indefinite mode state (v4)
+  indefiniteMode?: boolean;
+  handoffs?: AgentHandoff[];
+  totalLoopIterations?: number;
+  userInterrupts?: UserInterrupt[];
+}
+
+/** Agent handoff for context window management */
+export interface AgentHandoff {
+  agentId: string;
+  role: AgentRole;
+  taskId?: number;
+  timestamp: string;  // ISO date
+  tokenUsage: TokenUsage;
+  handoffBlock: ParsedHandoff | null;
+  replacementAgentId?: string;
+}
+
+/** Parsed handoff block from agent output */
+export interface ParsedHandoff {
+  taskId: number;
+  status: 'pending' | 'in_progress' | 'blocked' | 'nearly_complete';
+  filesModified: Array<{
+    path: string;
+    lines?: string;
+    functions?: string;
+  }>;
+  filesToTouch: Array<{
+    path: string;
+    reason: string;
+  }>;
+  currentState: string;
+  blockers?: string;
+  nextSteps: string;
+  context?: string;
+}
+
+/** User interrupt during indefinite run */
+export interface UserInterrupt {
+  timestamp: string;
+  guidance: string;
+  ceoResponse?: string;
+  appliedChanges?: string[];
+}
+
+/** Context monitor state for an agent */
+export interface AgentContextState {
+  agentId: string;
+  totalTokens: number;
+  contextLimit: number;
+  percentUsed: number;
+  lastThresholdNotified: ContextThreshold | null;
+  handoffRequested: boolean;
+}
+
+/** Health monitor status for an agent */
+export interface AgentHealthStatus {
+  agentId: string;
+  isHealthy: boolean;
+  lastOutputTime: Date;
+  errorCount: number;
+  lastError?: string;
+  isStuck: boolean;
 }

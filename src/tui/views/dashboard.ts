@@ -57,30 +57,29 @@ export class DashboardView {
 
     // Calculate totals
     const totalTokens = agents.reduce((sum, a) => sum + a.tokenUsage.inputTokens + a.tokenUsage.outputTokens, 0);
-    const totalCost = agents.reduce((sum, a) => sum + a.tokenUsage.totalCostUsd, 0);
     if (totalTokens > 0) {
-      lines.push(`{center}Total: ${totalTokens.toLocaleString()} tokens | $${totalCost.toFixed(4)}{/center}`);
+      lines.push(`{center}Total: ${totalTokens.toLocaleString()} tokens{/center}`);
     }
     lines.push('');
 
     // Agent table
     lines.push('{bold}Agents:{/bold}');
     lines.push('');
-    lines.push('  Status  Name                 Tokens         Cost');
-    lines.push('  ──────  ────────────────     ──────────     ──────');
+    lines.push('  Status  Name                 Tokens');
+    lines.push('  ──────  ────────────────     ──────────');
 
     // CEO
     const ceo = agents.find(a => a.config.role === 'ceo');
     if (ceo) {
       const tokens = ceo.tokenUsage.inputTokens + ceo.tokenUsage.outputTokens;
-      lines.push(`  ${this.getStatusIndicator(ceo.status)}     CEO                  ${this.padLeft(tokens.toLocaleString(), 10)}     $${ceo.tokenUsage.totalCostUsd.toFixed(4)}`);
+      lines.push(`  ${this.getStatusIndicator(ceo.status)}     CEO                  ${this.padLeft(tokens.toLocaleString(), 10)}`);
     }
 
     // Staff Engineer
     const staff = agents.find(a => a.config.role === 'staff');
     if (staff) {
       const tokens = staff.tokenUsage.inputTokens + staff.tokenUsage.outputTokens;
-      lines.push(`  ${this.getStatusIndicator(staff.status)}     Staff Engineer       ${this.padLeft(tokens.toLocaleString(), 10)}     $${staff.tokenUsage.totalCostUsd.toFixed(4)}`);
+      lines.push(`  ${this.getStatusIndicator(staff.status)}     Staff Engineer       ${this.padLeft(tokens.toLocaleString(), 10)}`);
     }
 
     // All Developers
@@ -88,14 +87,14 @@ export class DashboardView {
     for (const dev of devs) {
       const tokens = dev.tokenUsage.inputTokens + dev.tokenUsage.outputTokens;
       const name = dev.config.name.padEnd(16);
-      lines.push(`  ${this.getStatusIndicator(dev.status)}     ${name}     ${this.padLeft(tokens.toLocaleString(), 10)}     $${dev.tokenUsage.totalCostUsd.toFixed(4)}`);
+      lines.push(`  ${this.getStatusIndicator(dev.status)}     ${name}     ${this.padLeft(tokens.toLocaleString(), 10)}`);
     }
 
     // QA
     const qa = agents.find(a => a.config.role === 'qa');
     if (qa) {
       const tokens = qa.tokenUsage.inputTokens + qa.tokenUsage.outputTokens;
-      lines.push(`  ${this.getStatusIndicator(qa.status)}     QA                   ${this.padLeft(tokens.toLocaleString(), 10)}     $${qa.tokenUsage.totalCostUsd.toFixed(4)}`);
+      lines.push(`  ${this.getStatusIndicator(qa.status)}     QA                   ${this.padLeft(tokens.toLocaleString(), 10)}`);
     }
 
     lines.push('');
