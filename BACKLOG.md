@@ -1,46 +1,79 @@
 # Development Backlog
 
 **Purpose:** Long-term and future enhancement tasks
-**Last Updated:** December 16, 2025 (Session 4)
+**Last Updated:** December 17, 2025 (Session 9)
 
 ---
 
 ## RECENTLY COMPLETED (Moved from Backlog)
 
-### Session Persistence ✅
+### Session Persistence
 - Save session state on exit → **DONE**
 - Resume from saved state → **DONE**
 - Adopt existing projects → **DONE**
 
-### Parallel Execution ✅
-- Multiple developer agents → **DONE** (3 by default)
+### Parallel Execution
+- Multiple developer agents → **DONE** (up to 6)
 - Batched task execution → **DONE**
 - Promise.all for parallel work → **DONE**
+
+### Complexity-Aware Allocation (Session 8)
+- Task complexity analysis → **DONE**
+- Staff Engineer recommendations → **DONE**
+- Per-batch parallelism limits → **DONE**
+- `--max-developers N` CLI flag → **DONE**
+
+---
+
+## ACTIVE DEVELOPMENT (Next Sessions)
+
+### UX Enhancement: Show Developer Idle Reason
+**Priority:** LOW
+**Status:** Planned
+
+**Problem:** When developers are idle (e.g., only 1 task pending), the TUI doesn't explain why.
+
+**Tasks:**
+- [ ] Show "Idle - No pending tasks" status for unused developers
+- [ ] Display batch's `maxParallelTasks` limit in TUI
+- [ ] Add tooltip/info for `--max-developers` vs actual concurrency
+
+---
+
+### Optional: Force Parallel Override Flag
+**Priority:** LOW
+**Status:** Planned
+
+**Problem:** Users may want to override Staff Engineer's `maxParallelTasks` limit.
+
+**Tasks:**
+- [ ] Add `--force-parallel` flag to ignore batch `maxParallelTasks`
+- [ ] Document risks (may cause context overflow in complex tasks)
+
+---
+
+## RECENTLY COMPLETED (Sessions 11-13)
+
+### P0 Bug Investigation - NOT A BUG (Session 13)
+- Investigated "only 1 agent runs" issue
+- Determined it's expected behavior: only 1 pending task in current batch
+- `--max-developers` sets maximum available, `maxParallelTasks` limits per-batch concurrency
+
+### Token Display Bug Fix - COMPLETE (Session 11)
+Removed cost display from dashboard.ts and stats.ts.
+
+### Work-Stealing Queue - COMPLETE (Session 11)
+Created `src/queue.ts` with TaskQueue class.
+
+### QA Feedback Loop - COMPLETE (Session 11)
+QA → Developer retry loop with max 2 retries.
+
+### --max-developers Flag Fix - COMPLETE (Session 12)
+Fixed flag being ignored on resume.
 
 ---
 
 ## FUTURE ENHANCEMENTS
-
-### CLI Configuration
-**Priority:** HIGH
-
-**Tasks:**
-- `--max-developers N` flag to set developer count
-- `--model <model-id>` flag to change Claude model
-- `--no-tui` flag for headless operation
-
----
-
-### Retry Failed Tasks
-**Priority:** HIGH
-
-**Tasks:**
-- Auto-retry failed tasks (max 3 attempts)
-- Exponential backoff between retries
-- Mark as permanently failed after max retries
-- QA can request task re-execution
-
----
 
 ### Better TUI Layout
 **Priority:** MEDIUM
@@ -50,6 +83,7 @@
 - Horizontal/vertical split options
 - Collapsible tiles for inactive agents
 - Full-screen focus mode improvements
+- Better layout for 6 developers
 
 ---
 
@@ -87,6 +121,16 @@
 
 ---
 
+### CLI Enhancements
+**Priority:** LOW
+
+**Tasks:**
+- `--model <model-id>` flag to change Claude model
+- `--no-tui` flag for headless operation
+- `--verbose` flag for debug output
+
+---
+
 ### Multi-Project Support
 **Priority:** LOW
 
@@ -103,7 +147,6 @@
 **Tasks:**
 - Track task completion times
 - Agent efficiency comparison
-- Session cost tracking (token usage)
 - Historical stats across sessions
 
 ---
@@ -137,7 +180,7 @@ The following items were part of the old Python implementation and are no longer
 
 ### Adding New Tasks
 When adding new backlog items, include:
-1. **Priority level** (LOW/MEDIUM/HIGH)
+1. **Priority level** (LOW/MEDIUM/HIGH/CRITICAL)
 2. **Task list** (concrete steps)
 3. **Why it matters** (user benefit)
 
@@ -149,4 +192,5 @@ Items move from BACKLOG to TODO when:
 
 ---
 
-**Last Review:** December 16, 2025
+**Last Review:** December 20, 2025
+
