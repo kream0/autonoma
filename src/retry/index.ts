@@ -2,13 +2,17 @@
  * Retry Context Builder
  *
  * Builds context to inject into retry prompts with error information.
+ * V2 Update: Preserves full error trace history for learning from failures.
  */
 
 import { Database } from 'bun:sqlite';
 import type { VerificationResult } from '../verification/types.ts';
-import type { RetryContext, RetryContextRow } from './types.ts';
+import type { RetryContext, RetryContextRow, ErrorTrace } from './types.ts';
 
 export * from './types.ts';
+
+/** Maximum number of error traces to keep in history */
+const MAX_ERROR_TRACES = 5;
 
 export class RetryContextStore {
   constructor(private db: Database) {
@@ -23,9 +27,17 @@ export class RetryContextStore {
         last_error TEXT,
         verification_failures TEXT,
         human_resolution TEXT,
+        error_traces TEXT,
         updated_at TEXT NOT NULL
       );
     `);
+
+    // V2: Add error_traces column if it doesn't exist (migration)
+    try {
+      this.db.exec(`ALTER TABLE retry_context ADD COLUMN error_traces TEXT;`);
+    } catch {
+      // Column already exists
+    }
   }
 
   get(taskId: string): RetryContext | null {
@@ -42,6 +54,9 @@ export class RetryContextStore {
         ? JSON.parse(row.verification_failures)
         : [],
       humanResolution: row.human_resolution ?? undefined,
+      errorTraces: row.error_traces
+        ? JSON.parse(row.error_traces)
+        : [],
     };
   }
 
@@ -50,8 +65,8 @@ export class RetryContextStore {
     this.db.run(
       `
       INSERT OR REPLACE INTO retry_context
-      (task_id, previous_attempts, last_error, verification_failures, human_resolution, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      (task_id, previous_attempts, last_error, verification_failures, human_resolution, error_traces, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `,
       [
         taskId,
@@ -59,22 +74,46 @@ export class RetryContextStore {
         context.lastError,
         JSON.stringify(context.verificationFailures),
         context.humanResolution ?? null,
+        JSON.stringify(context.errorTraces ?? []),
         now,
       ]
     );
   }
 
+  /**
+   * Increment attempts and add new error trace to history
+   */
   incrementAttempts(
     taskId: string,
     error: string,
-    failures: VerificationResult[]
+    failures: VerificationResult[],
+    filesInvolved: string[] = []
   ): RetryContext {
     const existing = this.get(taskId);
+    const previousTraces = existing?.errorTraces ?? [];
+
+    // Create new error trace
+    const newTrace: ErrorTrace = {
+      iteration: (existing?.previousAttempts ?? 0) + 1,
+      timestamp: new Date().toISOString(),
+      errorType: failures.length > 0 ? 'verification' : 'runtime',
+      message: error,
+      stackTrace: failures.length > 0
+        ? failures.map(f => `${f.type}: ${f.message}`).join('\n')
+        : undefined,
+      filesInvolved,
+      suggestedFix: extractSuggestedFix(failures),
+    };
+
+    // Keep only last N traces
+    const errorTraces = [...previousTraces, newTrace].slice(-MAX_ERROR_TRACES);
+
     const context: RetryContext = {
       previousAttempts: (existing?.previousAttempts ?? 0) + 1,
       lastError: error,
       verificationFailures: failures,
       humanResolution: existing?.humanResolution,
+      errorTraces,
     };
     this.save(taskId, context);
     return context;
@@ -91,6 +130,7 @@ export class RetryContextStore {
         lastError: '',
         verificationFailures: [],
         humanResolution: resolution,
+        errorTraces: [],
       });
     }
   }
@@ -101,36 +141,100 @@ export class RetryContextStore {
 }
 
 /**
- * Build retry prompt section
+ * Extract suggested fix from verification failures
+ */
+function extractSuggestedFix(failures: VerificationResult[]): string | undefined {
+  for (const failure of failures) {
+    if (failure.output) {
+      // Look for common error patterns and suggest fixes
+      if (failure.output.includes('Cannot find module')) {
+        return 'Check import paths and ensure dependencies are installed';
+      }
+      if (failure.output.includes('Type error')) {
+        return 'Fix TypeScript type errors';
+      }
+      if (failure.output.includes('Test failed')) {
+        return 'Fix failing tests';
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Build retry prompt section with error history
+ * V2 Update: Includes full error trace history for learning
  */
 export function buildRetryPrompt(context: RetryContext): string {
   const sections: string[] = [];
 
-  sections.push(`## RETRY CONTEXT (Attempt ${context.previousAttempts + 1})`);
-  sections.push('');
+  sections.push(`<retry_context attempt="${context.previousAttempts + 1}">`);
 
+  // Current error
   if (context.lastError) {
-    sections.push(`**Previous error:** ${context.lastError}`);
-    sections.push('');
+    sections.push(`<current_error>${context.lastError}</current_error>`);
   }
 
+  // Verification failures
   if (context.verificationFailures.length > 0) {
-    sections.push('**Verification failures:**');
+    sections.push('<verification_failures>');
     for (const f of context.verificationFailures) {
-      sections.push(`- [${f.type}] ${f.message}`);
+      sections.push(`  <failure type="${f.type}">`);
+      sections.push(`    <message>${f.message}</message>`);
       if (f.output) {
-        sections.push(`  Output: ${f.output.slice(0, 500)}`);
+        sections.push(`    <output>${f.output.slice(0, 500)}</output>`);
       }
+      sections.push('  </failure>');
     }
-    sections.push('');
+    sections.push('</verification_failures>');
   }
 
+  // V2: Error history (learning from past failures)
+  if (context.errorTraces && context.errorTraces.length > 0) {
+    sections.push('<error_history>');
+    sections.push('<instruction>Learn from these previous failures. Do NOT repeat the same mistakes.</instruction>');
+
+    for (const trace of context.errorTraces) {
+      sections.push(`  <error iteration="${trace.iteration}" type="${trace.errorType}">`);
+      sections.push(`    <message>${trace.message}</message>`);
+      if (trace.filesInvolved.length > 0) {
+        sections.push(`    <files>${trace.filesInvolved.join(', ')}</files>`);
+      }
+      if (trace.suggestedFix) {
+        sections.push(`    <suggested_fix>${trace.suggestedFix}</suggested_fix>`);
+      }
+      if (trace.stackTrace) {
+        sections.push(`    <stack_trace>${trace.stackTrace.slice(0, 300)}</stack_trace>`);
+      }
+      sections.push('  </error>');
+    }
+
+    sections.push('</error_history>');
+  }
+
+  // Human guidance
   if (context.humanResolution) {
-    sections.push(`**Human guidance:** ${context.humanResolution}`);
-    sections.push('');
+    sections.push(`<human_guidance>${context.humanResolution}</human_guidance>`);
   }
 
-  sections.push('Please fix these issues and complete the task.');
+  // Instructions
+  sections.push('<instruction>');
+  sections.push('Review the error history above and fix the issues.');
+  sections.push('Do not repeat previous mistakes - learn from what failed.');
+  sections.push('Focus on the specific files and errors mentioned.');
+  sections.push('</instruction>');
+
+  sections.push('</retry_context>');
 
   return sections.join('\n');
+}
+
+/**
+ * Build a simpler retry prompt for quick retries
+ */
+export function buildQuickRetryPrompt(error: string, iteration: number): string {
+  return `<retry_context attempt="${iteration}">
+<error>${error}</error>
+<instruction>Fix the error above and complete the task.</instruction>
+</retry_context>`;
 }

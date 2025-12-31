@@ -33,9 +33,6 @@ export interface PhaseContext {
   projectContext: string | null;
   projectDocs: Map<string, string>;
 
-  // Settings
-  maxDevelopers: number;
-
   // Memory system - memorai
   memorai: MemoraiClient | null;
   protocolParser: ProtocolParser;
@@ -48,6 +45,8 @@ export interface PhaseContext {
   // Agent methods
   findAgentByRole(role: AgentRole): Agent | undefined;
   getDeveloperAgents(): Agent[];
+  spawnDevelopersForBatch(count: number): Agent[];
+  cleanupDevelopers(): void;
   startAgent(agentId: string, prompt: string): Promise<string[]>;
   createTask(description: string, agentId?: string): Task;
   updateTaskStatus(taskId: string, status: Task['status']): void;

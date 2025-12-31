@@ -48,7 +48,6 @@ Usage:
   autonoma --help                                Show this help
 
 Options:
-  --max-developers N    Maximum parallel developers (default: 6)
   --stdout              Plain-text output mode (no TUI, auto-logs to file)
   --log                 Save session transcript to .autonoma/logs/ (TUI mode)
   --indefinite          Run continuously until project is 100% complete
@@ -513,27 +512,14 @@ async function runStdoutOrchestration(
 
   const app = new StdoutApp(workingDir, indefiniteMode);
 
-  // For resume mode, load state first to get saved maxDevelopers
+  // For resume mode, load state first
   if (mode === 'resume') {
     await app.orchestrator.loadPersistedState();
   }
 
-  // Parse --max-developers flag
-  const maxDevIdx = args.indexOf('--max-developers');
-  if (maxDevIdx !== -1 && args[maxDevIdx + 1]) {
-    const maxDevs = parseInt(args[maxDevIdx + 1]!, 10);
-    if (!isNaN(maxDevs) && maxDevs >= 1 && maxDevs <= 10) {
-      app.orchestrator.setMaxDevelopers(maxDevs);
-      if (mode === 'resume') {
-        await app.orchestrator.saveState();
-      }
-    } else {
-      console.error('Error: --max-developers must be a number between 1 and 10');
-      process.exit(1);
-    }
-  }
+  // Note: --max-developers flag removed - developers are now spawned dynamically per batch
 
-  // Initialize agents
+  // Initialize agents (CEO, Staff Engineer, QA only - developers spawned per batch)
   app.orchestrator.initializeHierarchy();
   app.registerAgents();
 
@@ -595,28 +581,14 @@ async function runTuiOrchestration(
 ): Promise<void> {
   const app = new App(workingDir, indefiniteMode, LOG_MODE);
 
-  // For resume mode, load state first to get saved maxDevelopers
+  // For resume mode, load state first
   if (mode === 'resume') {
     await app.orchestrator.loadPersistedState();
   }
 
-  // Parse --max-developers flag - applies to ALL modes, can override saved state
-  const maxDevIdx = args.indexOf('--max-developers');
-  if (maxDevIdx !== -1 && args[maxDevIdx + 1]) {
-    const maxDevs = parseInt(args[maxDevIdx + 1]!, 10);
-    if (!isNaN(maxDevs) && maxDevs >= 1 && maxDevs <= 10) {
-      app.orchestrator.setMaxDevelopers(maxDevs);
-      // Persist the override so future resumes use this value
-      if (mode === 'resume') {
-        await app.orchestrator.saveState();
-      }
-    } else {
-      console.error('Error: --max-developers must be a number between 1 and 10');
-      process.exit(1);
-    }
-  }
+  // Note: --max-developers flag removed - developers are now spawned dynamically per batch
 
-  // Initialize agents FIRST so tiles can be created
+  // Initialize agents FIRST so tiles can be created (CEO, Staff Engineer, QA only)
   app.orchestrator.initializeHierarchy();
 
   // Create tiles now that agents exist

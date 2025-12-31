@@ -8,10 +8,19 @@ Autonoma enables faster development by running multiple Claude Code agents in pa
 
 - **CEO Agent** - Creates high-level plan from requirements
 - **Staff Engineer** - Breaks plan into batched tasks with complexity analysis
-- **Developer Agents** (up to 6) - Execute tasks in parallel
-- **QA Agent** - Reviews completed work
+- **Developer Agents** - Dynamically spawned per batch for optimal parallelism
+- **QA Agent** - Reviews completed work with verification pipeline
 
 All agents are visible simultaneously in a split-tile TUI, with keyboard navigation similar to a video call interface.
+
+## What's New (v4)
+
+- **Dynamic Developer Spawning** - Developers are created per-batch based on task count and complexity (no more fixed limit)
+- **Completion Promises** - Agents emit `<promise>TASK_COMPLETE</promise>` blocks to signal completion
+- **Recitation Blocks** - End-of-prompt objective reminders keep agents focused on task goals
+- **KV-Cache Optimized Prompts** - Static → semi-static → dynamic prompt ordering for better cache hits
+- **Verification Pipeline** - Multi-stage verification (typecheck, lint, test) after task completion
+- **Observation Store** - Large tool outputs saved to disk to reduce context usage
 
 ## Installation
 
@@ -41,11 +50,7 @@ bun run dev start requirements.md
 
 Creates a fresh orchestration from a requirements file. State is saved to `.autonoma/state.json` for resume capability.
 
-Optionally limit parallel developers:
-
-```bash
-bun run dev start requirements.md --max-developers 4
-```
+Developers are spawned dynamically based on batch size and complexity - no manual configuration needed.
 
 ### Resume Project
 
@@ -250,9 +255,13 @@ src/
 │   ├── review.ts         # QA review
 │   ├── ceo-approval.ts   # Final approval
 │   ├── prompts.ts        # Agent system prompts
+│   ├── prompt-builder.ts # KV-cache optimized prompt construction
+│   ├── recitation.ts     # End-of-prompt objective reminders
 │   └── parsers.ts        # Output JSON parsers
+├── observation-store.ts  # File-based storage for large observations
 ├── verification/       # Post-task verification
 │   ├── detector.ts       # Project type detection
+│   ├── pipeline.ts       # Multi-stage verification runner
 │   └── index.ts          # Run typecheck/build/tests
 ├── human-queue/        # Blocker management
 │   ├── store.ts          # SQLite storage

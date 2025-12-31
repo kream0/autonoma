@@ -138,13 +138,15 @@ function parseFilesToTouch(content: string): ParsedHandoff['filesToTouch'] {
 
 /**
  * Create a handoff record
+ * V2 Update: Added sessionId for resume support
  */
 export function createHandoffRecord(
   agentId: string,
   role: AgentRole,
   taskId: number | undefined,
   tokenUsage: TokenUsage,
-  handoffBlock: ParsedHandoff | null
+  handoffBlock: ParsedHandoff | null,
+  sessionId?: string
 ): AgentHandoff {
   return {
     agentId,
@@ -153,17 +155,25 @@ export function createHandoffRecord(
     timestamp: new Date().toISOString(),
     tokenUsage,
     handoffBlock,
+    sessionId,
   };
 }
 
 /**
  * Format handoff for injection into replacement agent prompt
+ * V2 Update: Includes sessionId for resume capability
  */
 export function formatHandoffForInjection(handoff: AgentHandoff): string {
+  const sessionIdNote = handoff.sessionId
+    ? `<session_id>${handoff.sessionId}</session_id>
+<resume_note>This session can be resumed using the session ID above.</resume_note>`
+    : '';
+
   if (!handoff.handoffBlock) {
     return `<previous_agent_handoff>
 <agent_id>${handoff.agentId}</agent_id>
 <role>${handoff.role}</role>
+${sessionIdNote}
 <note>Previous agent did not provide structured handoff. Check recent file changes.</note>
 </previous_agent_handoff>`;
   }

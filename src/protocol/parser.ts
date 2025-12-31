@@ -15,6 +15,8 @@ import type {
   DaemonError,
   WorkerResult,
   FileModification,
+  CompletionPromise,
+  PromiseResult,
 } from '../types/protocol.ts';
 
 /** Parse daemon protocol messages from agent output */
@@ -275,6 +277,148 @@ export class ProtocolParser {
       if (msg) messages.push(msg);
     }
     return messages;
+  }
+
+  // ============================================
+  // COMPLETION PROMISE PARSING (Ralph-Wiggum Style)
+  // ============================================
+
+  /** Valid completion promise values */
+  private static readonly VALID_PROMISES: CompletionPromise[] = [
+    'TASK_COMPLETE',
+    'PLAN_COMPLETE',
+    'TASKS_READY',
+    'REVIEW_COMPLETE',
+    'E2E_COMPLETE',
+    'APPROVED',
+    'REJECTED',
+    'VERIFICATION_PASSED',
+  ];
+
+  /**
+   * Parse completion promise from agent output.
+   * Looks for <promise>PROMISE_TYPE</promise> blocks.
+   *
+   * @param output Array of output lines from agent
+   * @returns PromiseResult if found, null otherwise
+   */
+  parseCompletionPromise(output: string[]): PromiseResult | null {
+    const fullOutput = output.join('\n');
+
+    // Match <promise>...</promise> blocks
+    // Also match with optional attributes like task_id
+    const promiseMatch = fullOutput.match(
+      /<promise(?:\s+task_id="(\d+)")?(?:\s+[^>]*)?>([A-Z_]+)<\/promise>/
+    );
+
+    if (!promiseMatch) {
+      return null;
+    }
+
+    const taskIdStr = promiseMatch[1];
+    const promiseType = promiseMatch[2] as CompletionPromise;
+
+    // Validate promise type
+    if (!ProtocolParser.VALID_PROMISES.includes(promiseType)) {
+      return null;
+    }
+
+    return {
+      promise: promiseType,
+      taskId: taskIdStr ? parseInt(taskIdStr, 10) : undefined,
+      metadata: this.extractPromiseMetadata(fullOutput, promiseType),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Check if output contains any completion promise
+   */
+  hasCompletionPromise(output: string[]): boolean {
+    return this.parseCompletionPromise(output) !== null;
+  }
+
+  /**
+   * Check if output contains a specific completion promise
+   */
+  hasSpecificPromise(output: string[], promise: CompletionPromise): boolean {
+    const result = this.parseCompletionPromise(output);
+    return result?.promise === promise;
+  }
+
+  /**
+   * Extract all completion promises from output (for multi-promise scenarios)
+   */
+  parseAllPromises(output: string[]): PromiseResult[] {
+    const fullOutput = output.join('\n');
+    const promises: PromiseResult[] = [];
+
+    const promiseRegex = /<promise(?:\s+task_id="(\d+)")?(?:\s+[^>]*)?>([A-Z_]+)<\/promise>/g;
+    let match;
+
+    while ((match = promiseRegex.exec(fullOutput)) !== null) {
+      const promiseType = match[2] as CompletionPromise;
+
+      if (ProtocolParser.VALID_PROMISES.includes(promiseType)) {
+        promises.push({
+          promise: promiseType,
+          taskId: match[1] ? parseInt(match[1], 10) : undefined,
+          metadata: {},
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    return promises;
+  }
+
+  /**
+   * Extract optional metadata near a promise block
+   */
+  private extractPromiseMetadata(
+    fullOutput: string,
+    _promise: CompletionPromise
+  ): Record<string, unknown> {
+    const metadata: Record<string, unknown> = {};
+
+    // Look for <promise_metadata>...</promise_metadata> block
+    const metaMatch = fullOutput.match(
+      /<promise_metadata>([\s\S]*?)<\/promise_metadata>/
+    );
+
+    if (metaMatch?.[1]) {
+      try {
+        const parsed = JSON.parse(metaMatch[1].trim());
+        if (typeof parsed === 'object' && parsed !== null) {
+          Object.assign(metadata, parsed);
+        }
+      } catch {
+        // Try to extract key-value pairs
+        const kvRegex = /<(\w+)>([^<]+)<\/\1>/g;
+        let kvMatch;
+        while ((kvMatch = kvRegex.exec(metaMatch[1])) !== null) {
+          metadata[kvMatch[1]!] = kvMatch[2];
+        }
+      }
+    }
+
+    return metadata;
+  }
+
+  /**
+   * Generate a completion promise block for injection into prompts
+   */
+  static formatPromiseInstruction(
+    expectedPromise: CompletionPromise,
+    taskId?: number
+  ): string {
+    const taskAttr = taskId ? ` task_id="${taskId}"` : '';
+    return `<completion_instruction>
+When your work is complete, output exactly:
+<promise${taskAttr}>${expectedPromise}</promise>
+
+This signals to the system that you have finished your task.
+</completion_instruction>`;
   }
 }
 

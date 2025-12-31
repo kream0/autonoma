@@ -50,10 +50,7 @@ import {
 } from './phases/index.ts';
 
 /** Current state file version */
-const STATE_VERSION = 3;
-
-/** Default number of parallel developers */
-const DEFAULT_MAX_DEVELOPERS = 6;
+const STATE_VERSION = 4;
 
 /** Common project documentation files */
 const PROJECT_DOC_FILES = ['PRD.md', 'TODO.md', 'LAST_SESSION.md', 'BACKLOG.md', 'COMPLETED_TASKS.md'];
@@ -84,7 +81,6 @@ export class Orchestrator {
   private guidanceWatcherInterval?: ReturnType<typeof setInterval>;
   private statusWritePending: boolean = false;
   private persistedState: PersistedState | null = null;
-  private maxDevelopers: number = DEFAULT_MAX_DEVELOPERS;
   private requirementsContent: string | null = null;
 
   // Context monitoring and handoff management
@@ -141,7 +137,6 @@ export class Orchestrator {
       persistedState: this.persistedState,
       projectContext: this.projectContext,
       projectDocs: this.projectDocs,
-      maxDevelopers: this.maxDevelopers,
       memorai: this.memorai,
       protocolParser: this.protocolParser,
       humanQueue: this.humanQueue,
@@ -150,6 +145,8 @@ export class Orchestrator {
 
       findAgentByRole: (role: AgentRole) => this.findAgentByRole(role),
       getDeveloperAgents: () => this.getDeveloperAgents(),
+      spawnDevelopersForBatch: (count: number) => this.spawnDevelopersForBatch(count),
+      cleanupDevelopers: () => this.cleanupDevelopers(),
       startAgent: (agentId: string, prompt: string) => this.startAgent(agentId, prompt),
       createTask: (description: string, agentId?: string) => this.createTask(description, agentId),
       updateTaskStatus: (taskId: string, status: Task['status']) => this.updateTaskStatus(taskId, status),
@@ -161,16 +158,6 @@ export class Orchestrator {
       emitOutput: (agentId: string, line: string) => this.events.onAgentOutput(agentId, line),
       buildContextSection: () => this.buildContextSection(),
     };
-  }
-
-  /**
-   * Set maximum number of parallel developers
-   */
-  setMaxDevelopers(n: number): void {
-    this.maxDevelopers = Math.max(1, Math.min(n, 10));
-    if (this.persistedState) {
-      this.persistedState.maxDevelopers = this.maxDevelopers;
-    }
   }
 
   /**
@@ -262,12 +249,11 @@ export class Orchestrator {
         state.batches = state.batches || [];
         state.currentBatchIndex = state.currentBatchIndex ?? 0;
         state.currentTasksInProgress = state.currentTasksInProgress || [];
-        state.maxDevelopers = state.maxDevelopers || DEFAULT_MAX_DEVELOPERS;
+        // maxDevelopers deprecated - developers spawned dynamically per batch
       }
 
       if (state.version === STATE_VERSION) {
         this.persistedState = state as PersistedState;
-        this.maxDevelopers = state.maxDevelopers || DEFAULT_MAX_DEVELOPERS;
         return state as PersistedState;
       }
       return null;
@@ -366,7 +352,7 @@ export class Orchestrator {
       currentBatchIndex: 0,
       currentTasksInProgress: [],
       completedPhases: [],
-      maxDevelopers: this.maxDevelopers,
+      // maxDevelopers deprecated - developers spawned dynamically per batch
     };
   }
 
@@ -749,22 +735,57 @@ export class Orchestrator {
   }
 
   /**
-   * Initialize the standard agent hierarchy
+   * Initialize the standard agent hierarchy (CEO, Staff Engineer, QA only)
+   * Developers are spawned dynamically per batch for optimal parallelism
    */
   initializeHierarchy(): void {
-    const existingDevs = this.getDeveloperAgents().length;
-
     if (this.agents.size === 0) {
       this.createAgent('ceo', 'CEO');
       this.createAgent('staff', 'Staff Engineer');
-      for (let i = 1; i <= this.maxDevelopers; i++) {
-        this.createAgent('developer', `Developer ${i}`);
-      }
       this.createAgent('qa', 'QA');
-    } else if (existingDevs < this.maxDevelopers) {
-      for (let i = existingDevs + 1; i <= this.maxDevelopers; i++) {
-        this.createAgent('developer', `Developer ${i}`);
+      // Developers spawned dynamically per batch via spawnDevelopersForBatch()
+    }
+  }
+
+  /**
+   * Spawn developers dynamically for a batch
+   * Returns the spawned developer agents
+   */
+  private spawnDevelopersForBatch(count: number): Agent[] {
+    // Cleanup any existing developers first
+    this.cleanupDevelopers();
+
+    // Warn if spawning many developers
+    if (count >= 20) {
+      this.events.onAgentOutput('orchestrator',
+        `[WARN] Spawning ${count} developers - high resource usage`);
+    }
+
+    const developers: Agent[] = [];
+    for (let i = 1; i <= count; i++) {
+      const id = this.createAgent('developer', `Developer ${i}`);
+      const agent = this.agents.get(id);
+      if (agent) developers.push(agent);
+    }
+
+    this.events.onAgentOutput('orchestrator',
+      `[SPAWN] Created ${developers.length} developers for this batch`);
+
+    return developers;
+  }
+
+  /**
+   * Cleanup all developer agents between batches
+   */
+  private cleanupDevelopers(): void {
+    const devIds: string[] = [];
+    for (const [id, agent] of this.agents) {
+      if (agent.state.config.role === 'developer') {
+        devIds.push(id);
       }
+    }
+    for (const id of devIds) {
+      this.agents.delete(id);
     }
   }
 
@@ -933,8 +954,8 @@ ${sections.join('\n')}
     if (ceoAgent) {
       this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Resuming from phase: ${state.phase}`);
       this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Completed phases: ${state.completedPhases.join(', ') || 'none'}`);
-      this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Max developers: ${this.maxDevelopers}`);
       this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Batches: ${state.batches.length}, current: ${state.currentBatchIndex}`);
+      this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Developers: spawned dynamically per batch`);
     }
 
     const ctx = this.createPhaseContext();
@@ -949,7 +970,7 @@ ${sections.join('\n')}
 
     if (!this.isPhaseComplete('task-breakdown')) {
       this.setPhase('task-breakdown');
-      await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
+      await runTaskBreakdownPhase(ctx, requirements);
     } else if (state.batches.length > 0) {
       this.persistedState!.batches = state.batches;
     }
@@ -1059,7 +1080,7 @@ ${sections.join('\n')}
     await runPlanningPhase(ctx, requirements);
 
     this.setPhase('task-breakdown');
-    await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
+    await runTaskBreakdownPhase(ctx, requirements);
 
     // Main execution loop with CEO approval
     const maxAttempts = 3;
@@ -1138,7 +1159,7 @@ ${sections.join('\n')}
 
     if (!this.isPhaseComplete('task-breakdown')) {
       this.setPhase('task-breakdown');
-      await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
+      await runTaskBreakdownPhase(ctx, requirements);
     }
 
     return requirements;
@@ -1167,7 +1188,7 @@ ${sections.join('\n')}
 
     // Run Staff Engineer to break down new milestones
     this.setPhase('task-breakdown');
-    await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
+    await runTaskBreakdownPhase(ctx, requirements);
 
     // Reset batch progress
     if (this.persistedState) {

@@ -19,6 +19,7 @@ import {
 
 export * from './types.ts';
 export * from './detector.ts';
+export * from './pipeline.ts';
 
 /**
  * Run a single verification command

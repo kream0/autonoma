@@ -25,11 +25,11 @@ function convertLegacyTasksToBatches(tasks: ParsedTasks['tasks']): TaskBatch[] {
 
 /**
  * Run task breakdown phase - Staff Engineer creates batched tasks
+ * Developers are spawned dynamically per batch based on task count
  */
 export async function runTaskBreakdownPhase(
   ctx: PhaseContext,
-  requirements: string,
-  setMaxDevelopers: (n: number) => void
+  requirements: string
 ): Promise<TaskBatch[]> {
   const staffAgent = ctx.findAgentByRole('staff');
   if (!staffAgent) throw new Error('Staff Engineer agent not found');
@@ -47,8 +47,8 @@ export async function runTaskBreakdownPhase(
   const staffPrompt = `${contextSection}<task>Break down milestones into specific coding tasks.</task>
 
 <context>
-<available_developers>${ctx.maxDevelopers}</available_developers>
-<execution_mode>PARALLEL - developers work simultaneously</execution_mode>
+<execution_mode>DYNAMIC PARALLELISM - developers spawned per batch based on task count</execution_mode>
+<parallelism_note>For each parallel batch, we spawn exactly as many developers as there are tasks (100% efficiency)</parallelism_note>
 </context>
 
 <milestones>
@@ -59,6 +59,7 @@ ${milestoneText}
 <step>Group tasks into batches</step>
 <step>Tasks in parallel batches will be executed simultaneously by different developers</step>
 <step>Ensure tasks in parallel batches touch DIFFERENT files to avoid conflicts</step>
+<step>Use maxParallelTasks per batch to limit parallelism for complex tasks that need more context</step>
 </instructions>`;
 
   const staffOutput = await ctx.startAgent(staffAgent.state.config.id, staffPrompt);
@@ -73,25 +74,10 @@ ${milestoneText}
   if (parsed && 'batches' in (parsed as object)) {
     const batchedPlan = parsed as ParsedBatches;
 
-    // Apply Staff Engineer's developer recommendation (advisory - capped by maxDevelopers)
-    if (batchedPlan.recommendedDevelopers !== undefined) {
-      const recommended = batchedPlan.recommendedDevelopers;
-      const actual = Math.min(recommended, ctx.maxDevelopers);
-
+    // Log any reasoning from Staff Engineer (recommendedDevelopers is obsolete - we spawn dynamically)
+    if (batchedPlan.reasoning) {
       ctx.emitOutput(staffAgent.state.config.id,
-        `[COMPLEXITY] Staff recommends ${recommended} parallel developers: ${batchedPlan.reasoning || 'no reason given'}`);
-
-      if (actual < ctx.maxDevelopers) {
-        ctx.emitOutput(staffAgent.state.config.id,
-          `[COMPLEXITY] Reducing from ${ctx.maxDevelopers} to ${actual} developers to avoid context limits`);
-        setMaxDevelopers(actual);
-        if (ctx.persistedState) {
-          ctx.persistedState.maxDevelopers = actual;
-        }
-      } else if (actual === ctx.maxDevelopers) {
-        ctx.emitOutput(staffAgent.state.config.id,
-          `[COMPLEXITY] Using ${actual} developers (full parallelism)`);
-      }
+        `[COMPLEXITY] Staff analysis: ${batchedPlan.reasoning}`);
     }
 
     // Store batches with complexity and context info

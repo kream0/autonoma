@@ -179,3 +179,51 @@ export interface WorkerResult {
   nextSteps?: string[];
   summary: string;
 }
+
+// ============================================
+// COMPLETION PROMISE PROTOCOL (Ralph-Wiggum Style)
+// ============================================
+
+/**
+ * Completion promises are structured markers that agents emit
+ * to signal completion of their work. The stop hook uses these
+ * to determine whether to allow exit or re-invoke the agent.
+ */
+export type CompletionPromise =
+  | 'TASK_COMPLETE'        // Developer finished task implementation
+  | 'PLAN_COMPLETE'        // CEO created project plan
+  | 'TASKS_READY'          // Staff Engineer broke down tasks
+  | 'REVIEW_COMPLETE'      // QA reviewed code
+  | 'E2E_COMPLETE'         // E2E testing completed
+  | 'APPROVED'             // CEO approved project
+  | 'REJECTED'             // CEO rejected project (needs retry)
+  | 'VERIFICATION_PASSED'; // All automated checks passed
+
+/** Result from parsing a completion promise */
+export interface PromiseResult {
+  promise: CompletionPromise;
+  taskId?: number;
+  metadata?: Record<string, unknown>;
+  timestamp: string;
+}
+
+/** Loop state persisted by stop hook */
+export interface LoopState {
+  iteration: number;
+  maxIterations: number;
+  agentId: string;
+  taskId?: number;
+  startedAt: string;
+  lastIterationAt: string;
+  accumulatedContext: string[];
+  promisesEmitted: PromiseResult[];
+}
+
+/** Self-loop configuration for agents */
+export interface SelfLoopConfig {
+  maxIterations: number;
+  checkCompletionPromise: boolean;
+  runVerificationOnClaim: boolean;
+  preserveErrorTraces: boolean;
+  injectRecitationBlock: boolean;
+}

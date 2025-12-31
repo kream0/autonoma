@@ -3,6 +3,12 @@
  *
  * Developers execute coding tasks with parallel execution support.
  * Includes verification after tasks and retry context injection.
+ *
+ * V2 Updates:
+ * - Promise-based completion flow (Ralph-Wiggum style)
+ * - Recitation blocks at end of prompts
+ * - Multi-stage verification pipeline
+ * - Controlled noise in batch prompts
  */
 
 import type { TaskBatch, DevTask } from '../types.ts';
@@ -14,9 +20,31 @@ import {
   formatVerificationResults,
 } from '../verification/index.ts';
 import { buildRetryPrompt } from '../retry/index.ts';
+import {
+  generateDeveloperRecitation,
+  createEmptyProgress,
+  type TaskProgress,
+} from './recitation.ts';
+
+// Instruction variants for controlled noise
+const INSTRUCTION_VARIANTS = [
+  'Implement this task now. Create the necessary files.',
+  'Execute this task. Write the required code.',
+  'Complete this task. Generate the needed files.',
+  'Build this task. Produce the required code.',
+  'Develop this task. Create the implementation.',
+];
+
+/**
+ * Get a varied instruction to prevent pattern-matching
+ */
+function getVariedInstruction(taskId: number): string {
+  return INSTRUCTION_VARIANTS[taskId % INSTRUCTION_VARIANTS.length]!;
+}
 
 /**
  * Run development phase - execute all batches
+ * Developers are spawned dynamically per batch for optimal parallelism
  */
 export async function runDevelopmentPhase(
   ctx: PhaseContext,
@@ -25,12 +53,12 @@ export async function runDevelopmentPhase(
 ): Promise<void> {
   const contextSection = ctx.buildContextSection();
   const batches = ctx.persistedState?.batches || [];
-  const developers = ctx.getDeveloperAgents();
 
   if (batches.length === 0) {
-    // Fallback: implement requirements directly with first developer
+    // Fallback: implement requirements directly with a single developer
+    const developers = ctx.spawnDevelopersForBatch(1);
     const devAgent = developers[0];
-    if (!devAgent) throw new Error('No developer agents found');
+    if (!devAgent) throw new Error('Failed to spawn developer');
 
     const task = ctx.createTask('Implement requirements', devAgent.state.config.id);
     ctx.updateTaskStatus(task.id, 'running');
@@ -47,11 +75,12 @@ ${requirements}
     await ctx.saveAgentLog('developer', devOutput);
 
     ctx.updateTaskStatus(task.id, devAgent.state.status === 'complete' ? 'complete' : 'failed');
+    ctx.cleanupDevelopers();
     await ctx.completePhase('development');
     return;
   }
 
-  // Execute batches
+  // Execute batches with dynamic developer spawning
   for (let batchIdx = startFromBatch; batchIdx < batches.length; batchIdx++) {
     const batch = batches[batchIdx];
     if (!batch || batch.status === 'complete') continue;
@@ -69,20 +98,29 @@ ${requirements}
       continue;
     }
 
+    // Calculate developers needed for this batch
+    // Use maxParallelTasks if specified (for complexity control), otherwise spawn one per task
+    const developersNeeded = batch.parallel
+      ? (batch.maxParallelTasks ?? pendingTasks.length)
+      : 1;
+
+    // Spawn developers for this batch
+    const developers = ctx.spawnDevelopersForBatch(developersNeeded);
+
     // Log batch start
-    const firstDev = developers[0];
-    if (firstDev) {
-      ctx.emitOutput(firstDev.state.config.id,
-        `[BATCH ${batchIdx + 1}/${batches.length}] ${batch.parallel ? 'PARALLEL' : 'SEQUENTIAL'} - ${pendingTasks.length} tasks`);
-    }
+    ctx.emitOutput('orchestrator',
+      `[BATCH ${batchIdx + 1}/${batches.length}] ${batch.parallel ? 'PARALLEL' : 'SEQUENTIAL'} - ${pendingTasks.length} tasks, ${developers.length} developers`);
 
     if (batch.parallel && developers.length > 1) {
-      // PARALLEL EXECUTION
+      // PARALLEL EXECUTION with work-stealing
       await executeTasksInParallel(ctx, batch, pendingTasks, developers, contextSection);
     } else {
       // SEQUENTIAL EXECUTION
       await executeTasksSequentially(ctx, batch, pendingTasks, developers[0]!, contextSection);
     }
+
+    // Cleanup developers after batch (will be recreated for next batch)
+    ctx.cleanupDevelopers();
 
     // Mark batch complete if all tasks done
     const allComplete = batch.tasks.every(t => t.status === 'complete');
@@ -96,34 +134,25 @@ ${requirements}
 /**
  * Execute tasks in parallel using work-stealing queue.
  * Each developer independently pulls tasks when ready.
+ * Developers are already spawned with the optimal count for this batch.
  */
 async function executeTasksInParallel(
   ctx: PhaseContext,
-  batch: TaskBatch,
+  _batch: TaskBatch,
   tasks: DevTask[],
   developers: Agent[],
   contextSection: string
 ): Promise<void> {
-  // Use batch-specific parallelism limit if provided
-  const maxParallel = batch.maxParallelTasks ?? developers.length;
-  const effectiveDevelopers = developers.slice(0, maxParallel);
-
-  // Log if batch has reduced parallelism due to complexity
-  if (maxParallel < developers.length && effectiveDevelopers[0]) {
-    ctx.emitOutput(effectiveDevelopers[0].state.config.id,
-      `[COMPLEXITY] Batch ${batch.batchId} limited to ${maxParallel} parallel tasks`);
-  }
-
   // Create work-stealing queue
   const queue = new TaskQueue(tasks);
 
-  if (effectiveDevelopers[0]) {
-    ctx.emitOutput(effectiveDevelopers[0].state.config.id,
-      `[QUEUE] ${queue.getPendingCount()} tasks, ${effectiveDevelopers.length} developers (work-stealing)`);
+  if (developers[0]) {
+    ctx.emitOutput(developers[0].state.config.id,
+      `[QUEUE] ${queue.getPendingCount()} tasks, ${developers.length} developers (work-stealing)`);
   }
 
   // Launch all developers as independent workers
-  const workerPromises = effectiveDevelopers.map(developer =>
+  const workerPromises = developers.map(developer =>
     developerWorker(ctx, developer, queue, contextSection)
   );
 
@@ -190,6 +219,22 @@ async function developerWorker(
       }
     }
 
+    // Track progress for recitation (initialized with current state)
+    const progress: TaskProgress = createEmptyProgress();
+    const iteration = (devTask.retryCount ?? 0) + 1;
+    const maxIterations = (devTask.maxRetries ?? 2) + 1;
+
+    // Generate recitation block for end of prompt
+    const recitationBlock = generateDeveloperRecitation(
+      devTask,
+      iteration,
+      maxIterations,
+      progress
+    );
+
+    // Use varied instruction to prevent pattern-matching
+    const instruction = getVariedInstruction(devTask.id);
+
     const devPrompt = `${contextSection}${retrySection}${memorySection}<task>
 <id>${devTask.id}</id>
 <title>${devTask.title}</title>
@@ -204,7 +249,9 @@ ${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
 <constraint>Focus ONLY on the files listed above. Other developers are working on other files simultaneously.</constraint>
 </execution_context>
 
-<instructions>Implement this task now. Create the necessary files.</instructions>`;
+<instructions>${instruction}</instructions>
+
+${recitationBlock}`;
 
     try {
       const devOutput = await ctx.startAgent(developer.state.config.id, devPrompt);
@@ -357,6 +404,22 @@ async function executeTasksSequentially(
       }
     }
 
+    // Track progress for recitation
+    const progress: TaskProgress = createEmptyProgress();
+    const iteration = (devTask.retryCount ?? 0) + 1;
+    const maxIterations = (devTask.maxRetries ?? 2) + 1;
+
+    // Generate recitation block for end of prompt
+    const recitationBlock = generateDeveloperRecitation(
+      devTask,
+      iteration,
+      maxIterations,
+      progress
+    );
+
+    // Use varied instruction
+    const instruction = getVariedInstruction(devTask.id);
+
     const devPrompt = `${contextSection}${memorySection}<task>
 <id>${devTask.id}</id>
 <title>${devTask.title}</title>
@@ -370,7 +433,9 @@ ${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
 <mode>SEQUENTIAL</mode>
 </execution_context>
 
-<instructions>Implement this task now. Create the necessary files.</instructions>`;
+<instructions>${instruction}</instructions>
+
+${recitationBlock}`;
 
     try {
       const devOutput = await ctx.startAgent(developer.state.config.id, devPrompt);
@@ -419,11 +484,10 @@ export async function runRetryTasks(
   tasks: DevTask[],
   contextSection: string
 ): Promise<void> {
-  const developers = ctx.getDeveloperAgents();
-  if (developers.length === 0) throw new Error('No developer agents found');
-
-  // Use first developer for retries (sequential to avoid conflicts)
-  const developer = developers[0]!;
+  // Spawn a single developer for retries (sequential to avoid conflicts)
+  const developers = ctx.spawnDevelopersForBatch(1);
+  const developer = developers[0];
+  if (!developer) throw new Error('Failed to spawn developer for retries');
 
   for (const devTask of tasks) {
     devTask.status = 'running';
@@ -467,4 +531,7 @@ ${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
 
     await ctx.saveState();
   }
+
+  // Cleanup developer after retries
+  ctx.cleanupDevelopers();
 }

@@ -7,13 +7,24 @@
 
 import type { Subprocess } from 'bun';
 import type { AgentConfig, AgentStatus, TokenUsage } from './types.ts';
+import type { SelfLoopConfig } from './types/protocol.ts';
 
 export interface SessionEvents {
   onOutput: (line: string) => void;
   onStatusChange: (status: AgentStatus) => void;
   onError: (error: string) => void;
   onTokenUpdate?: (usage: TokenUsage) => void;
+  onPromiseDetected?: (promise: string) => void;
 }
+
+/** Default self-loop configuration */
+const DEFAULT_LOOP_CONFIG: SelfLoopConfig = {
+  maxIterations: 10,
+  checkCompletionPromise: true,
+  runVerificationOnClaim: true,
+  preserveErrorTraces: true,
+  injectRecitationBlock: true,
+};
 
 /** Types for stream-json output format */
 interface StreamMessage {
@@ -48,13 +59,31 @@ export class ClaudeSession {
   private _status: AgentStatus = 'idle';
   private _output: string[] = [];
   private _tokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalCostUsd: 0 };
+  private _sessionId: string | null = null;
+  private _lastPromise: string | null = null;
   private events: SessionEvents;
   private config: AgentConfig;
+  private loopConfig: SelfLoopConfig;
   private decoder = new TextDecoder();
 
-  constructor(config: AgentConfig, events: SessionEvents) {
+  constructor(
+    config: AgentConfig,
+    events: SessionEvents,
+    loopConfig: Partial<SelfLoopConfig> = {}
+  ) {
     this.config = config;
     this.events = events;
+    this.loopConfig = { ...DEFAULT_LOOP_CONFIG, ...loopConfig };
+  }
+
+  /** Get the Claude Code session ID (for resume support) */
+  get sessionId(): string | null {
+    return this._sessionId;
+  }
+
+  /** Get the last completion promise detected */
+  get lastPromise(): string | null {
+    return this._lastPromise;
   }
 
   get status(): AgentStatus {
@@ -82,14 +111,19 @@ export class ClaudeSession {
   /**
    * Start a Claude Code session with the given prompt
    * Uses stdin streaming for large prompts to avoid E2BIG errors
+   *
+   * @param prompt The prompt to send to Claude
+   * @param resumeFromId Optional session ID to resume from
+   * @param taskId Optional task ID for loop state tracking
    */
-  async start(prompt: string): Promise<void> {
+  async start(prompt: string, resumeFromId?: string, taskId?: number): Promise<void> {
     if (this.process) {
       throw new Error('Session already running');
     }
 
     this.setStatus('running');
     this._output = [];
+    this._lastPromise = null;
 
     this.addOutput(`[${this.config.role.toUpperCase()}] Starting...`);
 
@@ -101,6 +135,12 @@ export class ClaudeSession {
       '--verbose',  // Required for stream-json with -p
       '-p', '',     // Empty prompt, actual prompt comes from stdin
     ];
+
+    // Resume from previous session if ID provided
+    if (resumeFromId) {
+      args.push('--resume', resumeFromId);
+      this.addOutput(`[Resuming from session: ${resumeFromId}]`);
+    }
 
     // Set permission mode based on agent config
     if (this.config.permissionMode === 'plan') {
@@ -116,16 +156,26 @@ export class ClaudeSession {
 
     this.addOutput(`[Working dir: ${this.config.workingDir}]`);
 
+    // Prepare environment with loop configuration
+    // Note: Hooks are automatically discovered from .claude/hooks/ by Claude Code
+    const loopEnv = {
+      ...process.env,
+      NO_COLOR: '1',
+      // Self-loop configuration for stop hook
+      AUTONOMA_MAX_ITERATIONS: String(this.loopConfig.maxIterations),
+      AUTONOMA_AGENT_ID: this.config.id,
+      AUTONOMA_WORKING_DIR: this.config.workingDir,
+      AUTONOMA_CHECK_PROMISE: this.loopConfig.checkCompletionPromise ? '1' : '0',
+      ...(taskId !== undefined && { AUTONOMA_TASK_ID: String(taskId) }),
+    };
+
     try {
       this.process = Bun.spawn(args, {
         cwd: this.config.workingDir,
         stdin: 'pipe',   // Enable stdin for prompt input
         stdout: 'pipe',
         stderr: 'pipe',
-        env: {
-          ...process.env,
-          NO_COLOR: '1',
-        },
+        env: loopEnv,
       });
 
       // Send the prompt via stdin as stream-json format
@@ -214,12 +264,16 @@ export class ClaudeSession {
    */
   private processJsonLine(line: string): void {
     try {
-      const msg = JSON.parse(line) as StreamMessage;
+      const msg = JSON.parse(line) as StreamMessage & { session_id?: string };
 
       // Handle different message types
       if (msg.type === 'system') {
         if (msg.subtype === 'init') {
           this.addOutput('[Session initialized]');
+          // Capture session ID for resume support
+          if (msg.session_id) {
+            this._sessionId = msg.session_id;
+          }
         } else if (msg.subtype === 'result') {
           // Capture final token counts from result
           if (msg.session) {
@@ -248,6 +302,14 @@ export class ClaudeSession {
             for (const textLine of textLines) {
               if (textLine.trim()) {
                 this.addOutput(textLine);
+
+                // Detect completion promises in text
+                const promiseMatch = textLine.match(/<promise[^>]*>([A-Z_]+)<\/promise>/);
+                if (promiseMatch?.[1]) {
+                  this._lastPromise = promiseMatch[1];
+                  this.events.onPromiseDetected?.(promiseMatch[1]);
+                  this.addOutput(`[Promise detected: ${promiseMatch[1]}]`);
+                }
               }
             }
           } else if (block.type === 'tool_use' && block.tool_use) {
