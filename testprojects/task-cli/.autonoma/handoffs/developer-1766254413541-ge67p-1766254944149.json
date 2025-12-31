@@ -1,0 +1,11 @@
+{
+  "agentId": "developer-1766254413541-ge67p",
+  "role": "developer",
+  "timestamp": "2025-12-20T18:22:24.146Z",
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalCostUsd": 0
+  },
+  "handoffBlock": null
+}

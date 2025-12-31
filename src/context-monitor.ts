@@ -16,10 +16,16 @@ import type {
 const DEFAULT_CONTEXT_LIMIT = 200_000;
 
 /** Thresholds and their corresponding actions */
-const THRESHOLDS: ContextThreshold[] = [50, 60, 70, 80];
+const THRESHOLDS: ContextThreshold[] = [40, 50, 60, 70, 80];
 
 /** Context awareness messages for each threshold level */
 const CONTEXT_MESSAGES: Record<ContextThreshold, string> = {
+  40: `<context_status level="40">
+REMINDER: You have used 40% of your available context window.
+Stay focused on your current objective. Avoid tangential exploration.
+Complete your current work efficiently before moving on.
+</context_status>`,
+
   50: `<context_status level="50">
 You have used approximately half of your available context window.
 Continue working normally. No action required.
@@ -209,5 +215,28 @@ export class ContextMonitor {
       percent: state.percentUsed,
       needsHandoff: state.handoffRequested,
     }));
+  }
+
+  /**
+   * Get 40% objective reminder with task context
+   */
+  getObjectiveReminder(
+    agentId: string,
+    taskTitle?: string,
+    completionCriteria?: string
+  ): string | null {
+    const state = this.agents.get(agentId);
+    if (!state || state.lastThresholdNotified !== 40) {
+      return null;
+    }
+
+    if (!taskTitle) return CONTEXT_MESSAGES[40];
+
+    return `<context_status level="40">
+REMINDER: You are 40% through available context.
+Current objective: ${taskTitle}
+${completionCriteria ? `Completion criteria: ${completionCriteria}` : ''}
+Stay focused on the task at hand.
+</context_status>`;
   }
 }

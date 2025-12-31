@@ -1,0 +1,78 @@
+{
+  "common": {
+    "loading": "A bɛ senna...",
+    "error": "Fili",
+    "success": "A bɛ dɛ",
+    "cancel": "A dabali",
+    "confirm": "A latigɛ",
+    "yes": "Ɔwɔ",
+    "no": "Ayi",
+    "ok": "OK",
+    "retry": "A lajɛ kokura"
+  },
+  "auth": {
+    "login": "Don",
+    "logout": "Bɔ",
+    "phone": "Telefɔni"
+  },
+  "customer": {
+    "home": {
+      "title": "Mobili ɲini",
+      "pickupPlaceholder": "I bɛ min?",
+      "destinationPlaceholder": "I bɛ taa min?",
+      "findRide": "Mobili ɲini",
+      "bookRide": "A latigɛ"
+    },
+    "tracking": {
+      "driverOnTheWay": "Shɔfɛri bɛ nana",
+      "driverArrived": "Shɔfɛri sera",
+      "rideInProgress": "Taamaw daminɛna",
+      "callDriver": "A wele",
+      "cancelRide": "A dabali"
+    }
+  },
+  "driver": {
+    "home": {
+      "online": "Ligne kɔnɔ",
+      "offline": "Ligne kɔkɔnɔ",
+      "waitingForRides": "Mobili makɔnɔni..."
+    },
+    "offer": {
+      "accept": "A minɛ",
+      "decline": "A ban"
+    },
+    "ride": {
+      "arrived": "N sera",
+      "startRide": "A daminɛ",
+      "completeRide": "A ban"
+    }
+  },
+  "vehicle": {
+    "moto": "Moto",
+    "berline": "Mobili",
+    "suv": "SUV"
+  },
+  "voice": {
+    "listening": "A bɛ lamɛn...",
+    "speak": "Kuma sisan",
+    "destinationConfirm": "Taayɔrɔ: {{address}}. Fɔ ɔwɔ ka latigɛ.",
+    "rideBooked": "Mobili latigɛra. Shɔfɛri bɛ nana.",
+    "newRide": "Mobili kura! {{client}} bɛ taa {{destination}}. {{fare}} francs. A minɛ walima a ban?",
+    "confirmCancel": "I b'a fɛ k'a dabali tiɲɛn? Fɔ ɔwɔ ka latigɛ."
+  },
+  "errors": {
+    "networkError": "Connexion tigɛra",
+    "noDriversAvailable": "Shɔfɛri tɛ"
+  },
+  "countries": {
+    "SN": "Senegali",
+    "CI": "Kɔtidiwari",
+    "MR": "Mɔritani",
+    "FR": "Faransi"
+  },
+  "units": {
+    "km": "km",
+    "min": "min",
+    "fcfa": "F CFA"
+  }
+}

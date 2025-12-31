@@ -236,12 +236,29 @@ src/
 ├── index.ts            # CLI entry point, App classes
 ├── types.ts            # Type definitions
 ├── session.ts          # Claude Code subprocess wrapper
-├── orchestrator.ts     # Agent hierarchy & execution
+├── orchestrator.ts     # Agent hierarchy & coordination
 ├── indefinite.ts       # IndefiniteLoopController
 ├── context-monitor.ts  # Context window monitoring
 ├── handoff.ts          # Agent handoff block parsing
 ├── queue.ts            # Work-stealing task queue
 ├── watchdog.ts         # Health monitoring
+├── phases/             # Phase execution modules
+│   ├── planning.ts       # CEO planning & replan
+│   ├── task-breakdown.ts # Staff Engineer batching
+│   ├── development.ts    # Parallel/sequential execution
+│   ├── testing.ts        # Automated test phase
+│   ├── review.ts         # QA review
+│   ├── ceo-approval.ts   # Final approval
+│   ├── prompts.ts        # Agent system prompts
+│   └── parsers.ts        # Output JSON parsers
+├── verification/       # Post-task verification
+│   ├── detector.ts       # Project type detection
+│   └── index.ts          # Run typecheck/build/tests
+├── human-queue/        # Blocker management
+│   ├── store.ts          # SQLite storage
+│   └── index.ts          # HumanQueue class
+├── retry/              # Retry context injection
+│   └── index.ts          # Error context for retries
 └── tui/
     ├── screen.ts       # Blessed screen + keybindings
     ├── tiles.ts        # Split-tile layout

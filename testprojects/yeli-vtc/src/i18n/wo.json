@@ -1,0 +1,78 @@
+{
+  "common": {
+    "loading": "Yàgg nañu...",
+    "error": "Njuumte",
+    "success": "Baax na",
+    "cancel": "Neenal",
+    "confirm": "Dëgël",
+    "yes": "Waaw",
+    "no": "Déet",
+    "ok": "OK",
+    "retry": "Jéemaatal"
+  },
+  "auth": {
+    "login": "Dugg",
+    "logout": "Génn",
+    "phone": "Telefon"
+  },
+  "customer": {
+    "home": {
+      "title": "Wut woto",
+      "pickupPlaceholder": "Fan ngay nekk?",
+      "destinationPlaceholder": "Fan nga bëgg dem?",
+      "findRide": "Wut woto",
+      "bookRide": "Jokkoo"
+    },
+    "tracking": {
+      "driverOnTheWay": "Otokar bi mungiy ñëw",
+      "driverArrived": "Otokar bi agsi na",
+      "rideInProgress": "Woto bi doxal na",
+      "callDriver": "Woote",
+      "cancelRide": "Neenal"
+    }
+  },
+  "driver": {
+    "home": {
+      "online": "Ci ligne",
+      "offline": "Ci biti",
+      "waitingForRides": "Xaaral woto..."
+    },
+    "offer": {
+      "accept": "Nangu",
+      "decline": "Bañ"
+    },
+    "ride": {
+      "arrived": "Agsi naa",
+      "startRide": "Tàmbalee",
+      "completeRide": "Jeex"
+    }
+  },
+  "vehicle": {
+    "moto": "Moto",
+    "berline": "Woto",
+    "suv": "SUV"
+  },
+  "voice": {
+    "listening": "Dëglu naa...",
+    "speak": "Wax léegi",
+    "destinationConfirm": "Ñu dem: {{address}}. Wax waaw ngir dëgël.",
+    "rideBooked": "Woto bi dafa jokkoo. Otokar biy ñëw.",
+    "newRide": "Woto bu bees! {{client}} bëgg dem {{destination}}. {{fare}} francs. Nangu walla bañ?",
+    "confirmCancel": "Dëgg nga bëgg neenal? Wax waaw ngir dëgël."
+  },
+  "errors": {
+    "networkError": "Connexion bi ngi dem",
+    "noDriversAvailable": "Amul otokar"
+  },
+  "countries": {
+    "SN": "Senegaal",
+    "CI": "Kot Diwaar",
+    "MR": "Mooritani",
+    "FR": "Faraans"
+  },
+  "units": {
+    "km": "km",
+    "min": "min",
+    "fcfa": "F CFA"
+  }
+}

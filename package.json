@@ -19,6 +19,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "blessed": "^0.1.81"
+    "blessed": "^0.1.81",
+    "memorai": "file:../memorai"
   }
 }

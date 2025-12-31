@@ -1,0 +1,15 @@
+{
+  "phase": "planning",
+  "iteration": 1,
+  "progress": {
+    "completed": 0,
+    "total": 0
+  },
+  "agents": {
+    "ceo": "idle",
+    "staff": "idle",
+    "developer-1": "idle",
+    "qa": "idle"
+  },
+  "lastUpdate": "2025-12-29T03:15:35.049Z"
+}

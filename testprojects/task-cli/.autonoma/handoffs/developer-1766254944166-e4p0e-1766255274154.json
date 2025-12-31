@@ -1,0 +1,11 @@
+{
+  "agentId": "developer-1766254944166-e4p0e",
+  "role": "developer",
+  "timestamp": "2025-12-20T18:27:54.153Z",
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalCostUsd": 0
+  },
+  "handoffBlock": null
+}

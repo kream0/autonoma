@@ -1,0 +1,12 @@
+{
+  "agentId": "staff-1766254944165-2uuif",
+  "role": "staff",
+  "timestamp": "2025-12-20T18:27:54.153Z",
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalCostUsd": 0
+  },
+  "handoffBlock": null,
+  "replacementAgentId": "staff-1766255274177-sdn34"
+}

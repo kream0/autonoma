@@ -137,4 +137,75 @@ export class TaskQueue {
   isDeveloperBusy(developerId: string): boolean {
     return this.active.has(developerId);
   }
+
+  /**
+   * Re-queue a task for retry (puts it back at the front of pending)
+   */
+  requeueTask(task: DevTask): void {
+    task.status = 'pending';
+    task.assignedTo = undefined;
+    // Put at front for priority retry
+    this.pending.unshift(task);
+  }
+
+  /**
+   * Rebalance priorities based on task age and status
+   * Call this after every N tasks completed
+   */
+  rebalancePriorities(getTaskAge: (task: DevTask) => number): void {
+    const toBoost: Array<{ task: DevTask; boost: number; idx: number }> = [];
+
+    for (let i = 0; i < this.pending.length; i++) {
+      const task = this.pending[i]!;
+      let boost = 0;
+
+      // Boost retryable failed tasks
+      if (
+        task.retryCount &&
+        task.retryCount > 0 &&
+        task.retryCount < (task.maxRetries ?? 2)
+      ) {
+        boost += 2;
+      }
+
+      // Boost old pending tasks (>1 hour)
+      const age = getTaskAge(task);
+      if (age > 3600000) {
+        boost += 1;
+      }
+
+      // Higher boost for tasks with human resolution
+      if (task.context?.includes('human_resolved')) {
+        boost += 3;
+      }
+
+      if (boost > 0) {
+        toBoost.push({ task, boost, idx: i });
+      }
+    }
+
+    // Sort by boost descending and move high-boost tasks to front
+    toBoost.sort((a, b) => b.boost - a.boost);
+
+    // Remove boosted tasks from their positions and prepend
+    const boostedTasks = toBoost
+      .filter((b) => b.boost >= 2)
+      .map((b) => b.task);
+
+    if (boostedTasks.length > 0) {
+      this.pending = [
+        ...boostedTasks,
+        ...this.pending.filter((t) => !boostedTasks.includes(t)),
+      ];
+    }
+  }
+
+  /**
+   * Get failed tasks that can be retried
+   */
+  getRetryableFailed(): DevTask[] {
+    return this.failed.filter(
+      (t) => (t.retryCount ?? 0) < (t.maxRetries ?? 2)
+    );
+  }
 }

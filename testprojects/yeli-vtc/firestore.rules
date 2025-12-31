@@ -1,0 +1,365 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================
+    // Helper Functions
+    // ============================================
+
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the requesting user is the resource owner
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Get user document data
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Check if user has a specific role
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    // Check if user is an admin
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    // Check if user is a driver
+    function isDriver() {
+      return hasRole('driver');
+    }
+
+    // Check if user is a customer
+    function isCustomer() {
+      return hasRole('customer');
+    }
+
+    // ============================================
+    // Users Collection
+    // ============================================
+    match /users/{userId} {
+      // Users can read their own profile
+      // Admins can read any user profile
+      allow read: if isOwner(userId) || isAdmin();
+
+      // Users can create their own profile during registration
+      allow create: if isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.keys().hasAll(['id', 'phoneNumber', 'countryCode', 'firstName', 'lastName', 'role', 'isVerified', 'isActive', 'createdAt', 'updatedAt']);
+
+      // Users can update their own profile
+      // Cannot change id, role, isVerified (admin only)
+      allow update: if isOwner(userId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.role == resource.data.role
+        && (request.resource.data.isVerified == resource.data.isVerified || isAdmin());
+
+      // Only admins can delete user profiles
+      allow delete: if isAdmin();
+
+      // User preferences subcollection
+      match /preferences/{prefId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // ============================================
+    // Drivers Collection
+    // ============================================
+    match /drivers/{driverId} {
+      // Drivers can read their own profile
+      // Customers can read basic driver info (for nearby drivers)
+      // Admins can read all driver profiles
+      allow read: if isOwner(driverId)
+        || isCustomer()
+        || isAdmin();
+
+      // Only the driver themselves can create their profile
+      allow create: if isOwner(driverId)
+        && request.resource.data.role == 'driver'
+        && request.resource.data.id == driverId;
+
+      // Drivers can update their own profile
+      // Special handling for location and status updates (real-time fields)
+      allow update: if isOwner(driverId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.role == 'driver';
+
+      // Only admins can delete driver profiles
+      allow delete: if isAdmin();
+
+      // Driver location subcollection for real-time tracking
+      match /location/{locationId} {
+        // Customers involved in active trips can read driver location
+        // Drivers can update their own location
+        allow read: if isOwner(driverId) || isCustomer() || isAdmin();
+        allow write: if isOwner(driverId);
+      }
+
+      // Driver statistics subcollection
+      match /stats/{statId} {
+        allow read: if isOwner(driverId) || isAdmin();
+        allow write: if isOwner(driverId) || isAdmin();
+      }
+
+      // Driver vehicles subcollection
+      match /vehicles/{vehicleId} {
+        allow read: if isOwner(driverId) || isCustomer() || isAdmin();
+        allow write: if isOwner(driverId) || isAdmin();
+      }
+    }
+
+    // ============================================
+    // Rides Collection (Ride Requests)
+    // ============================================
+    match /rides/{rideId} {
+      // Only the customer who created the ride can read it
+      // Admins can read all rides
+      allow read: if isAuthenticated()
+        && (resource.data.customerId == request.auth.uid || isAdmin());
+
+      // Customers can create ride requests
+      allow create: if isCustomer()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.keys().hasAll(['id', 'customerId', 'pickup', 'dropoff', 'vehicleType', 'paymentMethod', 'estimatedFare', 'createdAt']);
+
+      // Customers can update their own ride requests (e.g., cancel before assignment)
+      allow update: if isAuthenticated()
+        && resource.data.customerId == request.auth.uid;
+
+      // Only admins can delete ride records
+      allow delete: if isAdmin();
+    }
+
+    // ============================================
+    // Jobs Collection (Driver Job Offers)
+    // ============================================
+    match /jobs/{jobId} {
+      // Drivers can read jobs assigned/offered to them
+      // Admins can read all jobs
+      allow read: if isAuthenticated()
+        && (resource.data.driverId == request.auth.uid || isAdmin());
+
+      // System creates jobs (through Cloud Functions typically)
+      // For security, only admins can create jobs directly
+      allow create: if isAdmin();
+
+      // Drivers can update job status (accept/reject)
+      // Only if the job is assigned to them
+      allow update: if isDriver()
+        && resource.data.driverId == request.auth.uid
+        && request.resource.data.driverId == resource.data.driverId
+        && request.resource.data.rideId == resource.data.rideId;
+
+      // Only admins can delete job records
+      allow delete: if isAdmin();
+    }
+
+    // ============================================
+    // Pending Jobs Collection (Unassigned job pool)
+    // ============================================
+    match /pendingJobs/{jobId} {
+      // Available drivers can read pending jobs
+      allow read: if isDriver();
+
+      // System creates pending jobs (through Cloud Functions)
+      allow create: if isAdmin();
+
+      // Drivers can claim pending jobs (update to assign themselves)
+      allow update: if isDriver();
+
+      // System removes claimed jobs
+      allow delete: if isAdmin() || isDriver();
+    }
+
+    // ============================================
+    // Trips Collection (Active/Completed Trips)
+    // ============================================
+    match /trips/{tripId} {
+      // Only the customer or driver involved in the trip can read it
+      // Admins can read all trips
+      allow read: if isAuthenticated()
+        && (resource.data.customer.id == request.auth.uid
+            || resource.data.driver.id == request.auth.uid
+            || isAdmin());
+
+      // Trips are created by the system when a driver accepts a job
+      // For security, only admins can create trips directly
+      allow create: if isAdmin();
+
+      // Customer and driver can update trip (ratings, reviews, status changes)
+      // Must be a participant in the trip
+      allow update: if isAuthenticated()
+        && (resource.data.customer.id == request.auth.uid
+            || resource.data.driver.id == request.auth.uid);
+
+      // Only admins can delete trip records
+      allow delete: if isAdmin();
+
+      // Trip route subcollection for detailed route tracking
+      match /route/{pointId} {
+        allow read: if isAuthenticated()
+          && (get(/databases/$(database)/documents/trips/$(tripId)).data.customer.id == request.auth.uid
+              || get(/databases/$(database)/documents/trips/$(tripId)).data.driver.id == request.auth.uid
+              || isAdmin());
+        allow write: if isDriver()
+          && get(/databases/$(database)/documents/trips/$(tripId)).data.driver.id == request.auth.uid;
+      }
+
+      // Trip messages subcollection for in-trip chat
+      match /messages/{messageId} {
+        allow read: if isAuthenticated()
+          && (get(/databases/$(database)/documents/trips/$(tripId)).data.customer.id == request.auth.uid
+              || get(/databases/$(database)/documents/trips/$(tripId)).data.driver.id == request.auth.uid);
+        allow create: if isAuthenticated()
+          && (get(/databases/$(database)/documents/trips/$(tripId)).data.customer.id == request.auth.uid
+              || get(/databases/$(database)/documents/trips/$(tripId)).data.driver.id == request.auth.uid)
+          && request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if false; // Messages cannot be edited or deleted
+      }
+    }
+
+    // ============================================
+    // Trip History Collection (for faster queries)
+    // ============================================
+    match /tripHistory/{historyId} {
+      // Users can read their own trip history
+      allow read: if isAuthenticated()
+        && (resource.data.customerId == request.auth.uid
+            || resource.data.driverId == request.auth.uid
+            || isAdmin());
+
+      // System manages trip history
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ============================================
+    // Fare Estimates Collection (cached estimates)
+    // ============================================
+    match /fareEstimates/{estimateId} {
+      allow read: if isAuthenticated();
+      allow create: if isCustomer();
+      allow update, delete: if isAdmin();
+    }
+
+    // ============================================
+    // Vehicle Types Collection (read-only config)
+    // ============================================
+    match /vehicleTypes/{typeId} {
+      allow read: if true; // Public read access
+      allow write: if isAdmin();
+    }
+
+    // ============================================
+    // Payment Methods Collection (read-only config)
+    // ============================================
+    match /paymentMethods/{methodId} {
+      allow read: if true; // Public read access
+      allow write: if isAdmin();
+    }
+
+    // ============================================
+    // Pricing Configuration (read-only config)
+    // ============================================
+    match /pricing/{configId} {
+      allow read: if true; // Public read access
+      allow write: if isAdmin();
+    }
+
+    // ============================================
+    // Surge Zones Collection (dynamic pricing)
+    // ============================================
+    match /surgeZones/{zoneId} {
+      allow read: if true; // Public read access for surge info
+      allow write: if isAdmin();
+    }
+
+    // ============================================
+    // Notifications Collection
+    // ============================================
+    match /notifications/{notificationId} {
+      // Users can only read their own notifications
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+
+      // System creates notifications
+      allow create: if isAdmin();
+
+      // Users can mark their notifications as read
+      allow update: if isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId;
+
+      // Users can delete their own notifications
+      allow delete: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // ============================================
+    // Support Tickets Collection
+    // ============================================
+    match /supportTickets/{ticketId} {
+      // Users can read their own support tickets
+      allow read: if isAuthenticated()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      // Users can create support tickets
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Users can update their own tickets (add messages)
+      // Admins can update any ticket (respond, close)
+      allow update: if isAuthenticated()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      // Only admins can delete tickets
+      allow delete: if isAdmin();
+
+      // Ticket messages subcollection
+      match /messages/{messageId} {
+        allow read: if isAuthenticated()
+          && (get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId == request.auth.uid
+              || isAdmin());
+        allow create: if isAuthenticated()
+          && (get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId == request.auth.uid
+              || isAdmin())
+          && request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ============================================
+    // Promotions/Coupons Collection
+    // ============================================
+    match /promotions/{promoId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ============================================
+    // User Promotions (claimed coupons)
+    // ============================================
+    match /userPromotions/{userPromoId} {
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if isAdmin(); // Only system can mark as used
+      allow delete: if isAdmin();
+    }
+
+    // ============================================
+    // Default deny all other collections
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

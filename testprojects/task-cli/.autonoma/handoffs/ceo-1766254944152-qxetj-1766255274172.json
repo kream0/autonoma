@@ -1,0 +1,12 @@
+{
+  "agentId": "ceo-1766254944152-qxetj",
+  "role": "ceo",
+  "timestamp": "2025-12-20T18:27:54.152Z",
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalCostUsd": 0
+  },
+  "handoffBlock": null,
+  "replacementAgentId": "ceo-1766255274171-7zim3"
+}

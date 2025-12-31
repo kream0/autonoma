@@ -1,94 +1,88 @@
 # TODO - Development Priorities
 
-**Last Updated:** December 20, 2025 (Session 26)
-**Current Focus:** Session Logging Verified
-**Project Status:** Core Features Complete + Logging Verified
+**Last Updated:** December 31, 2025 (Session 45)
+**Current Focus:** Bug Fix Complete
+**Project Status:** All Systems Working
 
 ---
 
-## Recently Completed (Session 26)
+## QUICK RESUME
 
-### Session Logging Bug Fix ✅
-- [x] Fixed race condition in `flushLog()` causing duplicate log lines
-- [x] Buffer now cleared synchronously before async file write
-- [x] Fixed in both `StdoutApp` and `App` classes
+### Status: TypeScript Bug Fix Complete
 
-### Session Logging Verification ✅
-- [x] Tested stdout mode with `--indefinite`
-- [x] Verified log file created at `.autonoma/logs/session-{timestamp}.log`
-- [x] Verified log format: `[MM:SS] [AGENT/STATUS] message`
-- [x] Tested user guidance via stdin mid-execution
-- [x] Verified guidance captured in logs: `[USER/GUIDANCE]`
-- [x] Verified no duplicate lines after fix
+Session 45 fixed a Bun API compatibility issue:
+- [x] Fixed `FileSink.getWriter()` error in session.ts
+- [x] Verified stdout mode works
+- [x] Verified TUI mode compiles
 
----
-
-## Previously Completed (Sessions 24-25)
-
-### User Guidance System ✅
-- [x] Textbox overlay when pressing `p` in TUI mode
-- [x] Stdin support for stdout mode
-- [x] Full replan flow with `orchestrator.replanWithGuidance()`
-
-### Indefinite Mode ✅
-- [x] End-to-end cycle verified
-- [x] Loop exits correctly on CEO approval
-
----
-
-## Next Up: Extended Testing
-
-### TUI Mode Testing (Priority 1)
-- [ ] Run indefinite mode in TUI (not --stdout)
-- [ ] Verify TUI shows "[INDEFINITE]" in status bar
-- [ ] Press `p` to pause - verify textbox overlay appears
-- [ ] Type guidance and press Enter - verify CEO processes it
-- [ ] Test `--log` flag in TUI mode
-
-### Medium Project Testing (Priority 2)
-- [ ] Test indefinite mode on a medium complexity project
-- [ ] Verify handoff blocks parse correctly
-- [ ] Test agent respawn after simulated crash
-- [ ] Test context threshold warnings appear
-
----
-
-## How To Run
+### Quick Commands
 
 ```bash
-# Standard run
-bun run dev start /path/to/requirements.md
+# Install globally
+./install.sh
 
-# Indefinite mode with stdout logging
-bun run dev start /path/to/requirements.md --indefinite --stdout
+# Type check
+bun run typecheck
 
-# TUI with logging
-bun run dev start /path/to/requirements.md --log
+# Run Autonoma on a project
+bun run src/index.ts start /path/to/project/specs.md --stdout --max-developers 5
+
+# Monitor status (from supervisor)
+cat /path/to/project/.autonoma/status.json
+
+# Send guidance
+bun run src/index.ts guide /path/to/project "Focus on X"
+
+# View human queue
+bun run src/index.ts queue /path/to/project
+
+# Respond to blocker
+bun run src/index.ts respond /path/to/project <id> "resolution"
 ```
 
 ---
 
-## Architecture Overview
+## COMPLETED THIS SESSION (45)
 
-```
-Session Logging Flow:
-┌─────────────────────────────────────────────────────────┐
-│                    StdoutApp / App                      │
-│  log(agent, status, message) {                          │
-│    logBuffer.push(formatted_line)                       │
-│    if (logBuffer.length >= 20) flushLog()               │
-│  }                                                      │
-│                                                         │
-│  flushLog() {                                           │
-│    const toWrite = logBuffer  // Capture               │
-│    logBuffer = []              // Clear sync           │
-│    await appendFile(toWrite)   // Write async          │
-│  }                                                      │
-└─────────────────────────────────────────────────────────┘
-```
+### TypeScript Bug Fix
+- Fixed `src/session.ts:133` - Bun FileSink API
+- Changed from `getWriter()/write()/close()` to `write()/end()`
+- Verified both stdout and TUI modes work
+- Updated README architecture section
 
 ---
 
-## Next Priorities
+## COMPLETED SESSION (44)
 
-See BACKLOG.md for future enhancements.
+### Testing, Bug Fix & Wave 6 Cleanup
+
+- Fixed bun.lock detection bug in `src/verification/detector.ts`
+- Tested verification system with task-cli testproject
+- Tested human queue CLI commands end-to-end
+- Tested retry context injection flow
+- **Wave 6 Complete:** Removed legacy memory code (src/memory/)
+- Updated orchestrator and phases to use memorai exclusively
+- Added `autonoma pause <dir>` command
+- Added `autonoma logs <dir> [--tail N]` command
+
+---
+
+## COMPLETED PREVIOUSLY
+
+### Session 43: Memorai Integration & Supervisor Features
+- Created src/verification/, src/human-queue/, src/retry/ modules
+- Integrated memorai package
+- Added CLI commands: queue, respond
+
+### Session 42: AgentBridge Development via Autonoma
+- 24-minute greenfield build of Android automation CLI
+
+---
+
+## NEXT POTENTIAL TASKS
+
+1. Publish memorai to NPM
+2. Clean up dead code in db/schema.ts (storeMemory, searchMemories, etc.)
+3. Add orchestrator pause file polling to actually pause execution
+
+---

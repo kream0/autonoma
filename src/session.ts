@@ -81,6 +81,7 @@ export class ClaudeSession {
 
   /**
    * Start a Claude Code session with the given prompt
+   * Uses stdin streaming for large prompts to avoid E2BIG errors
    */
   async start(prompt: string): Promise<void> {
     if (this.process) {
@@ -96,7 +97,9 @@ export class ClaudeSession {
       'claude',
       '--model', 'claude-opus-4-5-20251101',
       '--output-format', 'stream-json',  // Enable streaming JSON output
+      '--input-format', 'stream-json',   // Accept input via stdin as JSON
       '--verbose',  // Required for stream-json with -p
+      '-p', '',     // Empty prompt, actual prompt comes from stdin
     ];
 
     // Set permission mode based on agent config
@@ -111,14 +114,12 @@ export class ClaudeSession {
       args.push('--append-system-prompt', this.config.systemPrompt);
     }
 
-    // Add the prompt
-    args.push('-p', prompt);
-
     this.addOutput(`[Working dir: ${this.config.workingDir}]`);
 
     try {
       this.process = Bun.spawn(args, {
         cwd: this.config.workingDir,
+        stdin: 'pipe',   // Enable stdin for prompt input
         stdout: 'pipe',
         stderr: 'pipe',
         env: {
@@ -126,6 +127,19 @@ export class ClaudeSession {
           NO_COLOR: '1',
         },
       });
+
+      // Send the prompt via stdin as stream-json format
+      if (this.process.stdin && typeof this.process.stdin !== 'number') {
+        const userMessage = JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: prompt,
+          },
+        });
+        this.process.stdin.write(userMessage + '\n');
+        this.process.stdin.end();
+      }
 
       // Start streaming stdout and stderr concurrently
       const streamPromises: Promise<void>[] = [];

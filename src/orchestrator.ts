@@ -5,10 +5,9 @@
  * Supports state persistence, resume capability, and parallel developer execution.
  */
 
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ClaudeSession } from './session.ts';
-import { TaskQueue } from './queue.ts';
 import { ContextMonitor } from './context-monitor.ts';
 import {
   parseHandoffBlock,
@@ -16,6 +15,12 @@ import {
   formatHandoffForInjection,
   HandoffStorage,
 } from './handoff.ts';
+import { AutonomaDb, createDatabase } from './db/schema.ts';
+import { ProtocolParser } from './protocol/parser.ts';
+import { MemoraiClient } from 'memorai';
+import { HumanQueue } from './human-queue/index.ts';
+import { RetryContextStore } from './retry/index.ts';
+import { createVerificationConfig, type VerificationConfig } from './verification/index.ts';
 import type {
   AgentConfig,
   AgentRole,
@@ -25,210 +30,33 @@ import type {
   Task,
   PersistedState,
   OrchestrationPhase,
-  TaskBatch,
-  DevTask,
+  StatusFile,
 } from './types.ts';
 
+// Import from phases module
+import {
+  SYSTEM_PROMPTS,
+  TILE_RATIOS,
+  runPlanningPhase,
+  runAdoptPhase,
+  runReplanPhase,
+  runTaskBreakdownPhase,
+  runDevelopmentPhase,
+  runTestingPhase,
+  runReviewPhase,
+  runCeoApprovalPhase,
+  type PhaseContext,
+  type Agent,
+} from './phases/index.ts';
+
 /** Current state file version */
-const STATE_VERSION = 3;  // v3: minimal storage (paths instead of content)
+const STATE_VERSION = 3;
 
 /** Default number of parallel developers */
 const DEFAULT_MAX_DEVELOPERS = 6;
 
-/** System prompts for each agent role */
-const SYSTEM_PROMPTS: Record<AgentRole, string> = {
-  ceo: `<role>CEO Agent in Autonoma</role>
-
-<responsibilities>
-- Analyze the given requirements and project context
-- Create a high-level plan with clear milestones
-- Ensure the plan follows any project guidelines provided
-- Output a structured plan that the Staff Engineer can break into tasks
-</responsibilities>
-
-<output_format>
-Your output MUST end with a JSON block containing the plan:
-\`\`\`json
-{
-  "milestones": [
-    {"id": 1, "title": "...", "description": "..."},
-    {"id": 2, "title": "...", "description": "..."}
-  ]
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [PLAN_COMPLETE] after the JSON.</completion_signal>`,
-
-  staff: `<role>Staff Engineer Agent in Autonoma</role>
-
-<responsibilities>
-- Receive milestones from the CEO
-- Break them into specific, actionable coding tasks
-- ANALYZE TASK COMPLEXITY to prevent context overflow in developers
-- Recommend optimal number of parallel developers based on task complexity
-- Group tasks into BATCHES based on dependencies
-- Tasks in the same batch that touch DIFFERENT files can run in PARALLEL
-</responsibilities>
-
-<complexity_analysis>
-<instruction>For each task, estimate its complexity based on:</instruction>
-<factors>
-- File count and scope of changes
-- Amount of existing code that must be read/understood
-- Cognitive complexity (algorithms, architecture decisions)
-- Integration points with other components
-</factors>
-<levels>
-- simple: Single file, straightforward change, ~5-50 lines
-- moderate: 1-3 files, well-defined scope, ~50-200 lines
-- complex: Multiple files, requires understanding codebase, ~200-500 lines
-- very_complex: Cross-cutting concern, architectural, requires extensive context
-</levels>
-</complexity_analysis>
-
-<developer_recommendation>
-<critical>Each developer starts with a FRESH context window - NO context carryover between tasks</critical>
-<rule>Complex/very_complex tasks consume more context tokens during execution</rule>
-<rule>Too many parallel complex tasks = developers may hit context limits (autocompact)</rule>
-<guidance>
-- All simple/moderate tasks: recommend up to 6 developers (full parallelism)
-- Mix with some complex tasks: recommend 3-4 developers
-- Mostly complex/very_complex tasks: recommend 1-2 developers, or split large tasks
-</guidance>
-</developer_recommendation>
-
-<output_format>
-Your output MUST end with a JSON block:
-\`\`\`json
-{
-  "recommendedDevelopers": <number 1-6>,
-  "reasoning": "<brief explanation of why this number>",
-  "batches": [
-    {
-      "batchId": 1,
-      "parallel": false,
-      "description": "Initial setup - must run first",
-      "tasks": [
-        {"id": 1, "title": "Initialize project", "description": "...", "files": ["package.json"], "complexity": "simple"}
-      ]
-    },
-    {
-      "batchId": 2,
-      "parallel": true,
-      "maxParallelTasks": 3,
-      "description": "Core features - limited parallelism due to complexity",
-      "tasks": [
-        {"id": 2, "title": "Implement auth", "description": "...", "files": ["src/auth.ts"], "complexity": "complex", "context": "Reference session.ts patterns"},
-        {"id": 3, "title": "Implement API", "description": "...", "files": ["src/api.ts"], "complexity": "moderate"}
-      ]
-    }
-  ]
-}
-\`\`\`
-</output_format>
-
-<batching_rules>
-1. Tasks that create foundational files go in early batches (parallel: false)
-2. Tasks touching DIFFERENT files can be parallel: true
-3. Tasks touching the SAME files must be in different batches or parallel: false
-4. Later batches can depend on earlier batches completing
-5. Use maxParallelTasks on batches with complex tasks to limit concurrency
-</batching_rules>
-
-<completion_signal>Signal completion with [TASKS_READY] after the JSON.</completion_signal>`,
-
-  developer: `<role>Developer Agent in Autonoma</role>
-
-<responsibilities>
-- Execute the assigned coding task
-- Create or modify files as needed
-- Write clean, working code following project conventions
-- Focus ONLY on your assigned files - other developers handle other files
-</responsibilities>
-
-<permissions>You have full permission to create and edit files. Be autonomous.</permissions>
-
-<constraints>
-- DO NOT ask for confirmation - just implement the task
-- Complete the task fully before signaling completion
-</constraints>
-
-<completion_signal>Signal completion with [TASK_COMPLETE] when done.</completion_signal>`,
-
-  qa: `<role>QA Agent in Autonoma</role>
-
-<responsibilities>
-- Review the code that was written
-- Check if it meets the requirements and follows project guidelines
-- Run any tests if applicable
-- Report any issues found, identifying specific task IDs that failed
-</responsibilities>
-
-<output_format>
-Your output MUST end with a JSON block containing your review results:
-\`\`\`json
-{
-  "overallStatus": "PASS" | "FAIL",
-  "failedTasks": [
-    {"taskId": 1, "reason": "Brief explanation of what's wrong"}
-  ],
-  "comments": "Optional overall comments about the implementation"
-}
-\`\`\`
-
-If all tasks pass, use: {"overallStatus": "PASS", "failedTasks": [], "comments": "..."}
-</output_format>
-
-<completion_signal>Signal completion with [REVIEW_COMPLETE] after the JSON block.</completion_signal>`,
-
-  e2e: `<role>E2E Testing Agent in Autonoma</role>
-
-<responsibilities>
-- Run end-to-end tests in a browser environment
-- Use the devtools MCP to control the browser
-- Test critical user flows as defined in requirements
-- Report visual and interaction bugs
-- Verify the application works as expected from a user perspective
-</responsibilities>
-
-<browser_testing>
-You have access to browser devtools via MCP. Use it to:
-- Navigate to the application URL
-- Interact with UI elements (click, type, scroll)
-- Take screenshots for visual verification
-- Check console for errors
-- Verify network requests complete successfully
-</browser_testing>
-
-<output_format>
-Your output MUST end with a JSON block containing test results:
-\`\`\`json
-{
-  "overallStatus": "PASS" | "FAIL",
-  "testsRun": <number>,
-  "testsPassed": <number>,
-  "testsFailed": <number>,
-  "failures": [
-    {"flow": "user login", "step": "click submit", "error": "button not found"}
-  ],
-  "screenshots": ["screenshot1.png", "screenshot2.png"],
-  "summary": "Brief summary of E2E test results"
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [E2E_COMPLETE] after the JSON.</completion_signal>`,
-};
-
-/** Tile size ratios for each role */
-const TILE_RATIOS: Record<AgentRole, number> = {
-  ceo: 40,
-  staff: 30,
-  developer: 15,
-  qa: 15,
-  e2e: 15,
-};
+/** Common project documentation files */
+const PROJECT_DOC_FILES = ['PRD.md', 'TODO.md', 'LAST_SESSION.md', 'BACKLOG.md', 'COMPLETED_TASKS.md'];
 
 export interface OrchestratorEvents {
   onAgentOutput: (agentId: string, line: string) => void;
@@ -239,37 +67,6 @@ export interface OrchestratorEvents {
   onHandoffRequired?: (agentId: string) => void;
 }
 
-interface ParsedPlan {
-  milestones: Array<{ id: number; title: string; description: string }>;
-}
-
-interface ParsedBatches {
-  recommendedDevelopers?: number;  // Staff Engineer's recommendation
-  reasoning?: string;  // Explanation for the recommendation
-  batches: Array<{
-    batchId: number;
-    parallel: boolean;
-    description?: string;
-    maxParallelTasks?: number;  // Per-batch parallelism limit
-    tasks: Array<{
-      id: number;
-      title: string;
-      description: string;
-      files?: string[];
-      complexity?: 'simple' | 'moderate' | 'complex' | 'very_complex';
-      context?: string;  // Task-specific context for developer
-    }>;
-  }>;
-}
-
-// Legacy format for backwards compatibility
-interface ParsedTasks {
-  tasks: Array<{ id: number; title: string; description: string; files?: string[] }>;
-}
-
-/** Common project documentation files that many projects use */
-const PROJECT_DOC_FILES = ['PRD.md', 'TODO.md', 'LAST_SESSION.md', 'BACKLOG.md', 'COMPLETED_TASKS.md'];
-
 export class Orchestrator {
   private agents: Map<string, { state: AgentState; session: ClaudeSession }> = new Map();
   private tasks: Map<string, Task> = new Map();
@@ -278,10 +75,14 @@ export class Orchestrator {
   private taskIdCounter = 0;
   public currentPhase: OrchestrationPhase = 'idle';
   private projectContext: string | null = null;
-  private projectDocs: Map<string, string> = new Map();  // Stores loaded project docs
+  private projectDocs: Map<string, string> = new Map();
   private logDir: string;
   private stateDir: string;
   private statePath: string;
+  private statusPath: string;
+  private guidancePath: string;
+  private guidanceWatcherInterval?: ReturnType<typeof setInterval>;
+  private statusWritePending: boolean = false;
   private persistedState: PersistedState | null = null;
   private maxDevelopers: number = DEFAULT_MAX_DEVELOPERS;
   private requirementsContent: string | null = null;
@@ -289,9 +90,19 @@ export class Orchestrator {
   // Context monitoring and handoff management
   private contextMonitor: ContextMonitor;
   private handoffStorage: HandoffStorage;
-  private pendingHandoffs: Map<string, boolean> = new Map();  // Track agents needing handoff
-  private pendingContextMessages: Map<string, string> = new Map();  // Messages to inject
+  private pendingHandoffs: Map<string, boolean> = new Map();
+  private pendingContextMessages: Map<string, string> = new Map();
   public indefiniteMode: boolean = false;
+
+  // Database
+  private db: AutonomaDb | null = null;
+  private protocolParser: ProtocolParser = new ProtocolParser();
+
+  // Memory and supervisor systems
+  private memorai: MemoraiClient | null = null;
+  private humanQueue: HumanQueue | null = null;
+  private retryContextStore: RetryContextStore | null = null;
+  private verificationConfig: VerificationConfig | null = null;
 
   constructor(workingDir: string, events: OrchestratorEvents) {
     this.workingDir = workingDir;
@@ -299,6 +110,8 @@ export class Orchestrator {
     this.stateDir = join(workingDir, '.autonoma');
     this.logDir = join(this.stateDir, 'logs');
     this.statePath = join(this.stateDir, 'state.json');
+    this.statusPath = join(this.stateDir, 'status.json');
+    this.guidancePath = join(this.stateDir, 'guidance.txt');
 
     // Initialize context monitor
     this.contextMonitor = new ContextMonitor({
@@ -320,21 +133,83 @@ export class Orchestrator {
   }
 
   /**
+   * Create PhaseContext for use by phase functions
+   */
+  private createPhaseContext(): PhaseContext {
+    return {
+      workingDir: this.workingDir,
+      persistedState: this.persistedState,
+      projectContext: this.projectContext,
+      projectDocs: this.projectDocs,
+      maxDevelopers: this.maxDevelopers,
+      memorai: this.memorai,
+      protocolParser: this.protocolParser,
+      humanQueue: this.humanQueue,
+      verificationConfig: this.verificationConfig,
+      retryContextStore: this.retryContextStore,
+
+      findAgentByRole: (role: AgentRole) => this.findAgentByRole(role),
+      getDeveloperAgents: () => this.getDeveloperAgents(),
+      startAgent: (agentId: string, prompt: string) => this.startAgent(agentId, prompt),
+      createTask: (description: string, agentId?: string) => this.createTask(description, agentId),
+      updateTaskStatus: (taskId: string, status: Task['status']) => this.updateTaskStatus(taskId, status),
+
+      saveState: () => this.saveState(),
+      saveAgentLog: (role: string, output: string[]) => this.saveAgentLog(role, output),
+      completePhase: (phase: OrchestrationPhase) => this.completePhase(phase),
+
+      emitOutput: (agentId: string, line: string) => this.events.onAgentOutput(agentId, line),
+      buildContextSection: () => this.buildContextSection(),
+    };
+  }
+
+  /**
    * Set maximum number of parallel developers
    */
   setMaxDevelopers(n: number): void {
-    this.maxDevelopers = Math.max(1, Math.min(n, 10));  // Clamp between 1-10
-    // Sync with persisted state if it exists
+    this.maxDevelopers = Math.max(1, Math.min(n, 10));
     if (this.persistedState) {
       this.persistedState.maxDevelopers = this.maxDevelopers;
     }
   }
 
   /**
-   * Initialize directories
+   * Initialize directories and database
    */
   private async initDirs(): Promise<void> {
     await mkdir(this.logDir, { recursive: true });
+
+    if (!this.db) {
+      this.db = await createDatabase(this.workingDir);
+
+      // Memorai - memory package
+      this.memorai = new MemoraiClient({ projectDir: this.workingDir });
+      try {
+        const isInit = this.memorai.isInitialized();
+        if (!isInit) {
+          this.memorai.init();
+          this.events.onAgentOutput('orchestrator', '[MEMORAI] Initialized memory database');
+        }
+      } catch (error) {
+        this.events.onAgentOutput('orchestrator', `[MEMORAI] Warning: Init failed: ${error}`);
+        this.memorai = null;
+      }
+
+      // Human queue for blockers
+      this.humanQueue = new HumanQueue(this.db.raw);
+
+      // Retry context store
+      this.retryContextStore = new RetryContextStore(this.db.raw);
+
+      // Verification config - detect project type
+      try {
+        this.verificationConfig = await createVerificationConfig(this.workingDir);
+        this.events.onAgentOutput('orchestrator',
+          `[VERIFY] Detected ${this.verificationConfig.projectType} project with ${this.verificationConfig.criteria.length} verification criteria`);
+      } catch (error) {
+        this.events.onAgentOutput('orchestrator', `[VERIFY] Warning: Detection failed: ${error}`);
+      }
+    }
   }
 
   /**
@@ -360,10 +235,8 @@ export class Orchestrator {
 
       // Handle version migration
       if (state.version === 1 || state.version === 2) {
-        // Migrate v1/v2 to v3: minimal storage format
         state.version = STATE_VERSION;
 
-        // Convert flat tasks to batches (v1 migration)
         if (state.tasks && state.tasks.length > 0 && (!state.batches || state.batches.length === 0)) {
           state.batches = [{
             batchId: 1,
@@ -373,21 +246,15 @@ export class Orchestrator {
           }];
         }
 
-        // v2->v3: Convert requirements content to path
         if (state.requirements && !state.requirementsPath) {
-          // We don't know the original path, store a marker
           state.requirementsPath = '__migrated__';
-          // Store content in memory for this session only
           this.requirementsContent = state.requirements;
         }
 
-        // v2->v3: Convert projectContext to flag
         if (state.projectContext !== undefined) {
           state.hasProjectContext = !!state.projectContext;
-          // Load context at runtime instead
         }
 
-        // Clean up legacy fields before saving
         delete state.requirements;
         delete state.projectContext;
         delete state.tasks;
@@ -420,6 +287,70 @@ export class Orchestrator {
   }
 
   /**
+   * Write status.json for external monitoring (Claude Code Control API)
+   * Non-blocking write with lock to prevent concurrent writes
+   */
+  private writeStatus(): void {
+    // Skip if a write is already in progress
+    if (this.statusWritePending) return;
+    this.statusWritePending = true;
+
+    const agents: Record<string, AgentStatus> = {};
+    let devIndex = 1;
+    for (const [, agent] of this.agents) {
+      const role = agent.state.config.role;
+      const key = role === 'developer' ? `developer-${devIndex++}` : role;
+      agents[key] = agent.state.status;
+    }
+
+    const tasks = this.getAllBatchTasks();
+    const status: StatusFile = {
+      phase: this.currentPhase,
+      iteration: this.persistedState?.totalLoopIterations || 1,
+      progress: {
+        completed: tasks.filter(t => t.status === 'complete').length,
+        total: tasks.length,
+      },
+      agents,
+      lastUpdate: new Date().toISOString(),
+    };
+
+    writeFile(this.statusPath, JSON.stringify(status, null, 2), 'utf-8')
+      .finally(() => { this.statusWritePending = false; })
+      .catch(() => {});
+  }
+
+  /**
+   * Start polling for guidance file (Claude Code Control API)
+   * Polls every 5 seconds for .autonoma/guidance.txt
+   */
+  startGuidanceWatcher(onGuidance: (guidance: string) => Promise<void>): void {
+    this.stopGuidanceWatcher();
+    this.guidanceWatcherInterval = setInterval(async () => {
+      try {
+        const content = await readFile(this.guidancePath, 'utf-8');
+        const guidance = content.trim();
+        if (guidance.length > 0) {
+          await unlink(this.guidancePath).catch(() => {});
+          await onGuidance(guidance);
+        }
+      } catch {
+        // File doesn't exist or read error - ignore
+      }
+    }, 5000);
+  }
+
+  /**
+   * Stop the guidance file watcher
+   */
+  stopGuidanceWatcher(): void {
+    if (this.guidanceWatcherInterval) {
+      clearInterval(this.guidanceWatcherInterval);
+      this.guidanceWatcherInterval = undefined;
+    }
+  }
+
+  /**
    * Initialize a new persisted state
    */
   private initPersistedState(requirementsPath: string): void {
@@ -443,12 +374,10 @@ export class Orchestrator {
    * Load requirements content from file
    */
   async loadRequirements(requirementsPath: string): Promise<string> {
-    // If we have cached content from migration, use it
     if (this.requirementsContent) {
       return this.requirementsContent;
     }
 
-    // Handle migrated state where we don't have original path
     if (requirementsPath === '__migrated__') {
       throw new Error('State was migrated from old version. Requirements content is unavailable. Please use "start" with the requirements file.');
     }
@@ -489,11 +418,10 @@ export class Orchestrator {
   }
 
   /**
-   * Load project context from CLAUDE.md if it exists
+   * Load project context from CLAUDE.md
    */
   async loadProjectContext(): Promise<string | null> {
     const claudeMdPath = join(this.workingDir, 'CLAUDE.md');
-
     try {
       const content = await readFile(claudeMdPath, 'utf-8');
       this.projectContext = content;
@@ -505,22 +433,19 @@ export class Orchestrator {
   }
 
   /**
-   * Load common project documentation files (PRD.md, TODO.md, etc.)
-   * These are commonly used in projects to provide context
+   * Load common project documentation files
    */
   async loadProjectDocs(): Promise<Map<string, string>> {
     this.projectDocs.clear();
-
     for (const fileName of PROJECT_DOC_FILES) {
       const filePath = join(this.workingDir, fileName);
       try {
         const content = await readFile(filePath, 'utf-8');
         this.projectDocs.set(fileName, content);
       } catch {
-        // File doesn't exist, skip it
+        // File doesn't exist
       }
     }
-
     return this.projectDocs;
   }
 
@@ -546,15 +471,14 @@ export class Orchestrator {
   }
 
   /**
-   * Get all tasks (runtime tasks created during execution)
+   * Get all tasks
    */
   getTasks(): Task[] {
     return Array.from(this.tasks.values());
   }
 
   /**
-   * Get all tasks from batches (includes pending tasks not yet started)
-   * This provides a complete view of all planned work
+   * Get all tasks from batches
    */
   getAllBatchTasks(): Task[] {
     const batches = this.persistedState?.batches || [];
@@ -586,18 +510,16 @@ export class Orchestrator {
 
   /**
    * Get permission mode for a role
-   * CEO and Staff only need to read/analyze - use plan mode
-   * Developer, QA, and E2E need to write files/run tests - use full permissions
    */
   private getPermissionMode(role: AgentRole): 'plan' | 'full' {
     switch (role) {
       case 'ceo':
       case 'staff':
-        return 'plan';  // Read-only for planning/analysis
+        return 'plan';
       case 'developer':
       case 'qa':
       case 'e2e':
-        return 'full';  // Full access for implementation/testing
+        return 'full';
     }
   }
 
@@ -635,17 +557,16 @@ export class Orchestrator {
           state.endTime = new Date();
         }
         this.events.onAgentStatusChange(id, status);
+        this.writeStatus();
       },
       onError: (error) => {
         state.error = error;
       },
       onTokenUpdate: (usage) => {
-        // Accumulate tokens across sessions
         state.tokenUsage.inputTokens += usage.inputTokens;
         state.tokenUsage.outputTokens += usage.outputTokens;
         state.tokenUsage.totalCostUsd += usage.totalCostUsd;
 
-        // Update context monitor (only in indefinite mode)
         if (this.indefiniteMode) {
           this.contextMonitor.updateTokenUsage(id, state.tokenUsage);
         }
@@ -653,8 +574,6 @@ export class Orchestrator {
     });
 
     this.agents.set(id, { state, session });
-
-    // Register with context monitor
     this.contextMonitor.registerAgent(id);
 
     return id;
@@ -662,18 +581,28 @@ export class Orchestrator {
 
   /**
    * Start an agent with a prompt
-   * In indefinite mode, prepends context awareness messages if thresholds were crossed
    */
   async startAgent(agentId: string, prompt: string): Promise<string[]> {
-    const agent = this.agents.get(agentId);
+    let agent = this.agents.get(agentId);
+
+    if (!agent) {
+      const roleMatch = agentId.match(/^(ceo|staff|developer|qa)-/);
+      if (roleMatch) {
+        const role = roleMatch[1] as AgentRole;
+        agent = this.findAgentByRole(role);
+        if (agent) {
+          this.events.onAgentOutput(agent.state.config.id,
+            `[RECOVERY] Agent ${agentId.slice(0, 20)}... was replaced, using new agent`);
+        }
+      }
+    }
+
     if (!agent) {
       throw new Error(`Agent ${agentId} not found`);
     }
 
-    // Clear previous output for reuse
     agent.state.output = [];
 
-    // In indefinite mode, check for context awareness messages to inject
     let finalPrompt = prompt;
     if (this.indefiniteMode) {
       const contextMessage = this.pendingContextMessages.get(agentId);
@@ -688,15 +617,14 @@ export class Orchestrator {
   }
 
   /**
-   * Check if an agent needs handoff (context limit reached)
+   * Check if an agent needs handoff
    */
   needsHandoff(agentId: string): boolean {
     return this.indefiniteMode && (this.pendingHandoffs.get(agentId) ?? false);
   }
 
   /**
-   * Perform agent handoff - parse output, save handoff, replace agent
-   * Returns the new agent ID
+   * Perform agent handoff
    */
   async performHandoff(agentId: string, currentTaskId?: number): Promise<string> {
     const agent = this.agents.get(agentId);
@@ -709,10 +637,7 @@ export class Orchestrator {
 
     this.events.onAgentOutput(agentId, '[HANDOFF] Processing handoff...');
 
-    // Parse handoff block from agent output
     const handoffBlock = parseHandoffBlock(agent.state.output);
-
-    // Create and save handoff record
     const handoff = createHandoffRecord(
       agentId,
       role,
@@ -723,7 +648,6 @@ export class Orchestrator {
 
     await this.handoffStorage.saveHandoff(handoff);
 
-    // Store in persisted state
     if (this.persistedState) {
       this.persistedState.handoffs = this.persistedState.handoffs || [];
       this.persistedState.handoffs.push(handoff);
@@ -732,16 +656,12 @@ export class Orchestrator {
 
     this.events.onAgentOutput(agentId, `[HANDOFF] Saved handoff record with ${handoffBlock ? 'structured data' : 'minimal data'}`);
 
-    // Kill old agent
     this.killAgent(agentId);
     this.contextMonitor.unregisterAgent(agentId);
     this.pendingHandoffs.delete(agentId);
     this.agents.delete(agentId);
 
-    // Create replacement agent
     const newAgentId = this.createAgent(role, name);
-
-    // Store replacement ID in handoff
     handoff.replacementAgentId = newAgentId;
     await this.handoffStorage.saveHandoff(handoff);
 
@@ -824,6 +744,7 @@ export class Orchestrator {
         task.completedAt = new Date();
       }
       this.events.onTaskUpdate(task);
+      this.writeStatus();
     }
   }
 
@@ -831,11 +752,9 @@ export class Orchestrator {
    * Initialize the standard agent hierarchy
    */
   initializeHierarchy(): void {
-    // Check if we already have agents
     const existingDevs = this.getDeveloperAgents().length;
 
     if (this.agents.size === 0) {
-      // Fresh start - create all agents
       this.createAgent('ceo', 'CEO');
       this.createAgent('staff', 'Staff Engineer');
       for (let i = 1; i <= this.maxDevelopers; i++) {
@@ -843,7 +762,6 @@ export class Orchestrator {
       }
       this.createAgent('qa', 'QA');
     } else if (existingDevs < this.maxDevelopers) {
-      // Need more developers - add them
       for (let i = existingDevs + 1; i <= this.maxDevelopers; i++) {
         this.createAgent('developer', `Developer ${i}`);
       }
@@ -853,7 +771,7 @@ export class Orchestrator {
   /**
    * Get all developer agents
    */
-  private getDeveloperAgents(): Array<{ state: AgentState; session: ClaudeSession }> {
+  private getDeveloperAgents(): Agent[] {
     return Array.from(this.agents.values()).filter(a => a.state.config.role === 'developer');
   }
 
@@ -861,224 +779,30 @@ export class Orchestrator {
     this.currentPhase = phase;
     if (this.persistedState) {
       this.persistedState.phase = phase;
-      this.saveState().catch(() => {}); // Fire and forget
+      this.saveState().catch(() => {});
     }
     this.events.onPhaseChange?.(phase);
-  }
-
-  /**
-   * Parse JSON from agent output
-   */
-  private parseJsonFromOutput(output: string[]): unknown | null {
-    const fullOutput = output.join('\n');
-
-    // Try to find JSON block in markdown code fence
-    const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/);
-    if (jsonMatch?.[1]) {
-      try {
-        return JSON.parse(jsonMatch[1]);
-      } catch {
-        // Continue to try other methods
-      }
-    }
-
-    // Try to find raw JSON object
-    const objectMatch = fullOutput.match(/\{[\s\S]*"(?:milestones|tasks|batches)"[\s\S]*\}/);
-    if (objectMatch?.[0]) {
-      try {
-        return JSON.parse(objectMatch[0]);
-      } catch {
-        // Failed to parse
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Parse QA output for review results
-   */
-  private parseQAOutput(output: string[]): {
-    overallStatus: 'PASS' | 'FAIL';
-    failedTasks: Array<{ taskId: number; reason: string }>;
-    comments?: string;
-  } | null {
-    const fullOutput = output.join('\n');
-
-    // Try to find JSON block in markdown code fence
-    const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/);
-    if (jsonMatch?.[1]) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.overallStatus && Array.isArray(parsed.failedTasks)) {
-          return {
-            overallStatus: parsed.overallStatus,
-            failedTasks: parsed.failedTasks,
-            comments: parsed.comments,
-          };
-        }
-      } catch {
-        // Continue to try other methods
-      }
-    }
-
-    // Try to find raw JSON with overallStatus
-    const objectMatch = fullOutput.match(/\{[\s\S]*"overallStatus"[\s\S]*\}/);
-    if (objectMatch?.[0]) {
-      try {
-        const parsed = JSON.parse(objectMatch[0]);
-        if (parsed.overallStatus && Array.isArray(parsed.failedTasks)) {
-          return {
-            overallStatus: parsed.overallStatus,
-            failedTasks: parsed.failedTasks,
-            comments: parsed.comments,
-          };
-        }
-      } catch {
-        // Failed to parse
-      }
-    }
-
-    // Fallback: check for simple PASS/FAIL keywords
-    if (fullOutput.includes('[REVIEW_COMPLETE]')) {
-      if (fullOutput.includes('PASS') && !fullOutput.includes('FAIL')) {
-        return { overallStatus: 'PASS', failedTasks: [] };
-      }
-      if (fullOutput.includes('FAIL')) {
-        return { overallStatus: 'FAIL', failedTasks: [], comments: 'QA indicated failure but no structured output' };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Detect the test command from package.json
-   */
-  private async detectTestCommand(): Promise<string> {
-    try {
-      const pkgPath = join(this.workingDir, 'package.json');
-      const content = await readFile(pkgPath, 'utf-8');
-      const pkg = JSON.parse(content);
-
-      if (pkg.scripts?.test) {
-        return 'npm test';
-      }
-      if (pkg.scripts?.['test:unit']) {
-        return 'npm run test:unit';
-      }
-    } catch {
-      // No package.json or parse error
-    }
-
-    return 'npm test';  // Default fallback
-  }
-
-  /**
-   * Parse test output for results
-   */
-  private parseTestOutput(output: string[]): {
-    overallStatus: 'PASS' | 'FAIL';
-    testsPassed: number;
-    testsFailed: number;
-    testsSkipped?: number;
-    failures: Array<{ test: string; error: string }>;
-    summary?: string;
-  } | null {
-    const fullOutput = output.join('\n');
-
-    // Try to find JSON block in markdown code fence
-    const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/);
-    if (jsonMatch?.[1]) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.overallStatus) {
-          return {
-            overallStatus: parsed.overallStatus,
-            testsPassed: parsed.testsPassed || 0,
-            testsFailed: parsed.testsFailed || 0,
-            testsSkipped: parsed.testsSkipped,
-            failures: parsed.failures || [],
-            summary: parsed.summary,
-          };
-        }
-      } catch {
-        // Continue to fallback
-      }
-    }
-
-    // Fallback: check for completion signal
-    if (fullOutput.includes('[TESTING_COMPLETE]')) {
-      // Try to infer from keywords
-      const hasFail = fullOutput.includes('FAIL') || fullOutput.includes('failed');
-      return {
-        overallStatus: hasFail ? 'FAIL' : 'PASS',
-        testsPassed: 0,
-        testsFailed: hasFail ? 1 : 0,
-        failures: [],
-      };
-    }
-
-    return null;
-  }
-
-  /**
-   * Parse CEO decision output
-   */
-  private parseCeoDecision(output: string[]): {
-    decision: 'APPROVE' | 'REJECT';
-    confidence?: 'high' | 'medium' | 'low';
-    summary?: string;
-    requiredChanges?: Array<{ description: string; priority: string }>;
-  } | null {
-    const fullOutput = output.join('\n');
-
-    // Try to find JSON block in markdown code fence
-    const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/);
-    if (jsonMatch?.[1]) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.decision) {
-          return {
-            decision: parsed.decision,
-            confidence: parsed.confidence,
-            summary: parsed.summary,
-            requiredChanges: parsed.requiredChanges,
-          };
-        }
-      } catch {
-        // Continue to fallback
-      }
-    }
-
-    // Fallback: check for completion signal and keywords
-    if (fullOutput.includes('[CEO_DECISION]')) {
-      if (fullOutput.includes('APPROVE')) {
-        return { decision: 'APPROVE' };
-      }
-      if (fullOutput.includes('REJECT')) {
-        return { decision: 'REJECT' };
-      }
-    }
-
-    return null;
+    this.writeStatus();
   }
 
   /**
    * Find agent by role
    */
-  private findAgentByRole(role: AgentRole): { state: AgentState; session: ClaudeSession } | undefined {
+  private findAgentByRole(role: AgentRole): Agent | undefined {
     return Array.from(this.agents.values()).find(a => a.state.config.role === role);
   }
 
   /**
-   * Build the context section for prompts using XML structure
-   * Includes CLAUDE.md and any project documentation files found
+   * Build the context section for prompts
    */
   private buildContextSection(): string {
     const sections: string[] = [];
 
-    // Add CLAUDE.md if present
+    sections.push(`<project_path>
+<absolute_path>${this.workingDir}</absolute_path>
+<instruction>This is the TARGET PROJECT you are working on. ALL file operations, tests, and builds must be done in this directory. Do NOT navigate to or test parent directories.</instruction>
+</project_path>`);
+
     if (this.projectContext) {
       sections.push(`<project_guidelines>
 <source>CLAUDE.md</source>
@@ -1089,7 +813,6 @@ ${this.projectContext}
 </project_guidelines>`);
     }
 
-    // Add project documentation files if present
     if (this.projectDocs.size > 0) {
       const docSections: string[] = [];
       for (const [fileName, content] of this.projectDocs) {
@@ -1104,31 +827,21 @@ ${docSections.join('\n')}
 </project_documentation>`);
     }
 
-    if (sections.length === 0) {
-      return '';
+    if (this.persistedState?.ceoFeedback) {
+      sections.push(`<ceo_required_changes>
+<instruction>The CEO rejected the previous iteration. You MUST fix these specific issues:</instruction>
+<changes>
+${this.persistedState.ceoFeedback}
+</changes>
+<directive>Focus ONLY on fixing these issues. Do not re-explore the codebase unnecessarily.</directive>
+</ceo_required_changes>`);
     }
 
     return sections.join('\n\n') + '\n\n';
   }
 
   /**
-   * Convert legacy flat tasks to batch format
-   */
-  private convertLegacyTasksToBatches(tasks: ParsedTasks['tasks']): TaskBatch[] {
-    // Simple conversion: put all tasks in one sequential batch
-    return [{
-      batchId: 1,
-      tasks: tasks.map(t => ({
-        ...t,
-        status: 'pending' as const,
-      })),
-      parallel: false,
-      status: 'pending',
-    }];
-  }
-
-  /**
-   * Load and format context files for adopt prompts using XML structure
+   * Load and format context files for adopt prompts
    */
   private async loadContextFiles(contextFiles: string[]): Promise<string> {
     if (contextFiles.length === 0) return '';
@@ -1163,20 +876,15 @@ ${sections.join('\n')}
 
   /**
    * Analyze an existing project to create a resume state
-   * Used for projects that weren't initialized with Autonoma
    */
   async adoptProject(requirementsPath: string, contextFiles: string[] = []): Promise<void> {
     await this.initDirs();
     await this.loadProjectContext();
     await this.loadProjectDocs();
 
-    // Load requirements content
     const requirements = await this.loadRequirements(requirementsPath);
-
-    // Load user-provided context files
     const userContextSection = await this.loadContextFiles(contextFiles);
 
-    // Initialize state with path, not content
     this.initPersistedState(requirementsPath);
 
     const ceoAgent = this.findAgentByRole('ceo');
@@ -1191,63 +899,9 @@ ${sections.join('\n')}
     }
     this.events.onAgentOutput(ceoAgent.state.config.id, '[ADOPT] Analyzing existing project...');
 
-    // Ask CEO to analyze what exists and create a plan for remaining work
-    const projectContextSection = this.buildContextSection();
-
-    // Build prompt with context-aware instructions
-    const hasContext = userContextSection.length > 0;
-    const analysisInstructions = hasContext
-      ? `<instructions>
-<step>Use the provided context files to understand the codebase structure</step>
-<step>Only verify critical implementation details - trust the context for structure</step>
-<step>Identify what has already been implemented based on the context</step>
-<step>Create a plan for the REMAINING work only</step>
-<step>Output milestones for what still needs to be done</step>
-</instructions>`
-      : `<instructions>
-<step>Analyze the current state of the codebase</step>
-<step>Identify what has already been implemented</step>
-<step>Create a plan for the REMAINING work only</step>
-<step>Output milestones for what still needs to be done</step>
-</instructions>`;
-
-    const adoptPrompt = `${userContextSection}${projectContextSection}<task>Adopt an existing project that may have partial implementation.</task>
-
-<requirements>
-${requirements}
-</requirements>
-
-${analysisInstructions}
-
-<output_format>
-Your output MUST end with a JSON block containing the plan for remaining work:
-\`\`\`json
-{
-  "milestones": [
-    {"id": 1, "title": "...", "description": "..."},
-    {"id": 2, "title": "...", "description": "..."}
-  ]
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [PLAN_COMPLETE] after the JSON.</completion_signal>`;
-
     this.setPhase('planning');
-    const output = await this.startAgent(ceoAgent.state.config.id, adoptPrompt);
-    await this.saveAgentLog('ceo-adopt', output);
-
-    // Parse the plan
-    const plan = this.parseJsonFromOutput(output) as ParsedPlan | null;
-
-    if (plan?.milestones?.length) {
-      this.persistedState!.plan = plan;
-      this.events.onAgentOutput(ceoAgent.state.config.id, `[ADOPT] Found ${plan.milestones.length} milestones for remaining work`);
-    } else {
-      this.events.onAgentOutput(ceoAgent.state.config.id, '[ADOPT] No structured plan found, will analyze requirements directly');
-    }
-
-    await this.completePhase('planning');
+    const ctx = this.createPhaseContext();
+    await runAdoptPhase(ctx, requirements, userContextSection);
     await this.saveState();
 
     this.events.onAgentOutput(ceoAgent.state.config.id, '[ADOPT] Project adopted. Run with --resume to continue.');
@@ -1264,18 +918,13 @@ Your output MUST end with a JSON block containing the plan for remaining work:
 
     await this.initDirs();
 
-    // Load project context at runtime if it exists
     if (state.hasProjectContext) {
       await this.loadProjectContext();
     }
-
-    // Load project documentation files
     await this.loadProjectDocs();
 
-    // Load requirements content from file
     const requirements = await this.loadRequirements(state.requirementsPath);
 
-    // Initialize agents
     if (this.agents.size === 0) {
       this.initializeHierarchy();
     }
@@ -1288,18 +937,20 @@ Your output MUST end with a JSON block containing the plan for remaining work:
       this.events.onAgentOutput(ceoAgent.state.config.id, `[RESUME] Batches: ${state.batches.length}, current: ${state.currentBatchIndex}`);
     }
 
+    const ctx = this.createPhaseContext();
+
     // Resume from appropriate phase
     if (!this.isPhaseComplete('planning')) {
-      await this.runPlanningPhase(requirements);
+      this.setPhase('planning');
+      await runPlanningPhase(ctx, requirements);
     } else if (state.plan) {
-      // Restore plan from state
       this.persistedState!.plan = state.plan;
     }
 
     if (!this.isPhaseComplete('task-breakdown')) {
-      await this.runTaskBreakdownPhase(requirements);
+      this.setPhase('task-breakdown');
+      await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
     } else if (state.batches.length > 0) {
-      // Restore batches from state
       this.persistedState!.batches = state.batches;
     }
 
@@ -1309,7 +960,6 @@ Your output MUST end with a JSON block containing the plan for remaining work:
     let approved = this.isPhaseComplete('ceo-approval');
     let attempts = currentAttempts;
 
-    // Use stored outputs if available
     let testOutput = state.lastTestOutput || [];
     let qaOutput = state.lastQaOutput || [];
 
@@ -1321,45 +971,29 @@ Your output MUST end with a JSON block containing the plan for remaining work:
           `[CEO LOOP] Attempt ${attempts}/${maxAttempts} - Retrying with feedback`);
       }
 
-      // Development phase
       if (!this.isPhaseComplete('development')) {
-        await this.runDevelopmentPhase(requirements, state.currentBatchIndex);
+        this.setPhase('development');
+        await runDevelopmentPhase(ctx, requirements, state.currentBatchIndex);
       }
 
-      // Testing phase
       if (!this.isPhaseComplete('testing')) {
-        const testResults = await this.runTestingPhase();
+        this.setPhase('testing');
+        const testResults = await runTestingPhase(ctx);
         testOutput = testResults.output;
       }
 
-      // QA Review phase
       if (!this.isPhaseComplete('review')) {
-        qaOutput = await this.runReviewPhaseWithOutput(requirements);
+        this.setPhase('review');
+        qaOutput = await runReviewPhase(ctx, requirements);
       }
 
-      // CEO Approval phase
       if (!this.isPhaseComplete('ceo-approval')) {
-        const ceoResult = await this.runCeoApprovalPhase(requirements, testOutput, qaOutput);
+        this.setPhase('ceo-approval');
+        const ceoResult = await runCeoApprovalPhase(ctx, requirements, testOutput, qaOutput);
         approved = ceoResult.approved;
 
         if (!approved && attempts < maxAttempts) {
-          // Reset phases for retry (keep planning and task-breakdown)
-          if (this.persistedState) {
-            this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
-              p => p === 'planning' || p === 'task-breakdown'
-            );
-            // Reset batch progress for re-execution
-            this.persistedState.currentBatchIndex = 0;
-            for (const batch of this.persistedState.batches) {
-              batch.status = 'pending';
-              for (const task of batch.tasks) {
-                task.status = 'pending';
-                task.assignedTo = undefined;
-              }
-            }
-            await this.saveState();
-          }
-
+          this.resetForRetry();
           if (ceoAgent) {
             this.events.onAgentOutput(ceoAgent.state.config.id,
               `[CEO FEEDBACK] Changes required: ${ceoResult.feedback}`);
@@ -1383,561 +1017,23 @@ Your output MUST end with a JSON block containing the plan for remaining work:
   }
 
   /**
-   * Run planning phase (CEO)
+   * Reset state for retry after CEO rejection
    */
-  private async runPlanningPhase(requirements: string): Promise<void> {
-    this.setPhase('planning');
-    const ceoAgent = this.findAgentByRole('ceo');
-    if (!ceoAgent) throw new Error('CEO agent not found');
-
-    const planTask = this.createTask('Analyze requirements and create plan', ceoAgent.state.config.id);
-    this.updateTaskStatus(planTask.id, 'running');
-
-    const contextSection = this.buildContextSection();
-    if (this.projectContext) {
-      this.events.onAgentOutput(ceoAgent.state.config.id, '[INFO] Found CLAUDE.md - using project context for planning');
-    }
-    if (this.projectDocs.size > 0) {
-      const docNames = Array.from(this.projectDocs.keys()).join(', ');
-      this.events.onAgentOutput(ceoAgent.state.config.id, `[INFO] Found project docs: ${docNames}`);
-    }
-
-    const ceoPrompt = `${contextSection}<task>Analyze requirements and create a development plan.</task>
-
-<requirements>
-${requirements}
-</requirements>`;
-
-    const ceoOutput = await this.startAgent(ceoAgent.state.config.id, ceoPrompt);
-    await this.saveAgentLog('ceo', ceoOutput);
-
-    this.updateTaskStatus(planTask.id, ceoAgent.state.status === 'complete' ? 'complete' : 'failed');
-
-    // Parse and save the plan
-    const plan = this.parseJsonFromOutput(ceoOutput) as ParsedPlan | null;
-
-    if (plan?.milestones?.length) {
-      this.persistedState!.plan = plan;
-      this.events.onAgentOutput(ceoAgent.state.config.id, `[INFO] Plan created with ${plan.milestones.length} milestones`);
-    } else {
-      this.events.onAgentOutput(ceoAgent.state.config.id, '[Note: No structured plan found, using direct execution]');
-    }
-
-    await this.completePhase('planning');
-  }
-
-  /**
-   * Run task breakdown phase (Staff Engineer)
-   */
-  private async runTaskBreakdownPhase(requirements: string): Promise<void> {
-    this.setPhase('task-breakdown');
-    const staffAgent = this.findAgentByRole('staff');
-    if (!staffAgent) throw new Error('Staff Engineer agent not found');
-
-    const breakdownTask = this.createTask('Break plan into development tasks', staffAgent.state.config.id);
-    this.updateTaskStatus(breakdownTask.id, 'running');
-
-    const contextSection = this.buildContextSection();
-    const plan = this.persistedState?.plan;
-
-    const milestoneText = plan?.milestones
-      ? plan.milestones.map(m => `<milestone id="${m.id}">${m.title}: ${m.description}</milestone>`).join('\n')
-      : `<fallback>Based on requirements directly</fallback>\n${requirements}`;
-
-    const staffPrompt = `${contextSection}<task>Break down milestones into specific coding tasks.</task>
-
-<context>
-<available_developers>${this.maxDevelopers}</available_developers>
-<execution_mode>PARALLEL - developers work simultaneously</execution_mode>
-</context>
-
-<milestones>
-${milestoneText}
-</milestones>
-
-<instructions>
-<step>Group tasks into batches</step>
-<step>Tasks in parallel batches will be executed simultaneously by different developers</step>
-<step>Ensure tasks in parallel batches touch DIFFERENT files to avoid conflicts</step>
-</instructions>`;
-
-    const staffOutput = await this.startAgent(staffAgent.state.config.id, staffPrompt);
-    await this.saveAgentLog('staff', staffOutput);
-
-    this.updateTaskStatus(breakdownTask.id, staffAgent.state.status === 'complete' ? 'complete' : 'failed');
-
-    // Try to parse as new batch format first
-    const parsed = this.parseJsonFromOutput(staffOutput);
-
-    if (parsed && 'batches' in (parsed as object)) {
-      const batchedPlan = parsed as ParsedBatches;
-
-      // Apply Staff Engineer's developer recommendation (advisory - capped by maxDevelopers)
-      if (batchedPlan.recommendedDevelopers !== undefined) {
-        const recommended = batchedPlan.recommendedDevelopers;
-        const actual = Math.min(recommended, this.maxDevelopers);
-
-        this.events.onAgentOutput(staffAgent.state.config.id,
-          `[COMPLEXITY] Staff recommends ${recommended} parallel developers: ${batchedPlan.reasoning || 'no reason given'}`);
-
-        if (actual < this.maxDevelopers) {
-          this.events.onAgentOutput(staffAgent.state.config.id,
-            `[COMPLEXITY] Reducing from ${this.maxDevelopers} to ${actual} developers to avoid context limits`);
-          this.setMaxDevelopers(actual);
-          this.persistedState!.maxDevelopers = actual;
-        } else if (actual === this.maxDevelopers) {
-          this.events.onAgentOutput(staffAgent.state.config.id,
-            `[COMPLEXITY] Using ${actual} developers (full parallelism)`);
+  private async resetForRetry(): Promise<void> {
+    if (this.persistedState) {
+      this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
+        p => p === 'planning' || p === 'task-breakdown'
+      );
+      this.persistedState.currentBatchIndex = 0;
+      for (const batch of this.persistedState.batches) {
+        batch.status = 'pending';
+        for (const task of batch.tasks) {
+          task.status = 'pending';
+          task.assignedTo = undefined;
         }
       }
-
-      // Store batches with complexity and context info
-      this.persistedState!.batches = batchedPlan.batches.map(b => ({
-        batchId: b.batchId,
-        tasks: b.tasks.map(t => ({
-          ...t,
-          status: 'pending' as const,
-          complexity: t.complexity,
-          context: t.context,
-        })),
-        parallel: b.parallel,
-        maxParallelTasks: b.maxParallelTasks,
-        status: 'pending' as const,
-      }));
-
-      const totalTasks = batchedPlan.batches.reduce((sum, b) => sum + b.tasks.length, 0);
-      const parallelBatches = batchedPlan.batches.filter(b => b.parallel).length;
-      this.events.onAgentOutput(staffAgent.state.config.id,
-        `[INFO] Created ${batchedPlan.batches.length} batches with ${totalTasks} total tasks (${parallelBatches} parallel batches)`);
-    } else if (parsed && 'tasks' in (parsed as object)) {
-      // Legacy format - convert to batches
-      const legacyPlan = parsed as ParsedTasks;
-      this.persistedState!.batches = this.convertLegacyTasksToBatches(legacyPlan.tasks);
-      this.events.onAgentOutput(staffAgent.state.config.id,
-        `[INFO] Created ${legacyPlan.tasks.length} tasks (legacy format, running sequentially)`);
-    }
-
-    await this.completePhase('task-breakdown');
-  }
-
-  /**
-   * Run development phase (Developer) - with parallel execution
-   */
-  private async runDevelopmentPhase(requirements: string, startFromBatch: number = 0): Promise<void> {
-    this.setPhase('development');
-
-    const contextSection = this.buildContextSection();
-    const batches = this.persistedState?.batches || [];
-    const developers = this.getDeveloperAgents();
-
-    if (batches.length === 0) {
-      // Fallback: implement requirements directly with first developer
-      const devAgent = developers[0];
-      if (!devAgent) throw new Error('No developer agents found');
-
-      const task = this.createTask('Implement requirements', devAgent.state.config.id);
-      this.updateTaskStatus(task.id, 'running');
-
-      const devPrompt = `${contextSection}<task>Implement requirements directly (no task breakdown available).</task>
-
-<requirements>
-${requirements}
-</requirements>
-
-<instructions>Create the necessary files and code to fulfill the requirements.</instructions>`;
-
-      const devOutput = await this.startAgent(devAgent.state.config.id, devPrompt);
-      await this.saveAgentLog('developer', devOutput);
-
-      this.updateTaskStatus(task.id, devAgent.state.status === 'complete' ? 'complete' : 'failed');
-      await this.completePhase('development');
-      return;
-    }
-
-    // Execute batches
-    for (let batchIdx = startFromBatch; batchIdx < batches.length; batchIdx++) {
-      const batch = batches[batchIdx];
-      if (!batch || batch.status === 'complete') continue;
-
-      this.persistedState!.currentBatchIndex = batchIdx;
-      batch.status = 'running';
-      await this.saveState();
-
-      const pendingTasks = batch.tasks.filter(t => t.status === 'pending' || t.status === 'running');
-
-      if (pendingTasks.length === 0) {
-        batch.status = 'complete';
-        continue;
-      }
-
-      // Log batch start
-      const firstDev = developers[0];
-      if (firstDev) {
-        this.events.onAgentOutput(firstDev.state.config.id,
-          `[BATCH ${batchIdx + 1}/${batches.length}] ${batch.parallel ? 'PARALLEL' : 'SEQUENTIAL'} - ${pendingTasks.length} tasks`);
-      }
-
-      if (batch.parallel && developers.length > 1) {
-        // PARALLEL EXECUTION
-        await this.executeTasksInParallel(batch, pendingTasks, developers, contextSection);
-      } else {
-        // SEQUENTIAL EXECUTION
-        await this.executeTasksSequentially(batch, pendingTasks, developers[0]!, contextSection);
-      }
-
-      // Mark batch complete if all tasks done
-      const allComplete = batch.tasks.every(t => t.status === 'complete');
-      batch.status = allComplete ? 'complete' : 'failed';
       await this.saveState();
     }
-
-    await this.completePhase('development');
-  }
-
-  /**
-   * Execute tasks in parallel using work-stealing queue.
-   * Each developer independently pulls tasks when ready - no waiting for slowest.
-   */
-  private async executeTasksInParallel(
-    batch: TaskBatch,
-    tasks: DevTask[],
-    developers: Array<{ state: AgentState; session: ClaudeSession }>,
-    contextSection: string
-  ): Promise<void> {
-    // Use batch-specific parallelism limit if provided, otherwise use all available developers
-    const maxParallel = batch.maxParallelTasks ?? developers.length;
-    const effectiveDevelopers = developers.slice(0, maxParallel);
-
-    // Log if batch has reduced parallelism due to complexity
-    if (maxParallel < developers.length && effectiveDevelopers[0]) {
-      this.events.onAgentOutput(effectiveDevelopers[0].state.config.id,
-        `[COMPLEXITY] Batch ${batch.batchId} limited to ${maxParallel} parallel tasks`);
-    }
-
-    // Create work-stealing queue
-    const queue = new TaskQueue(tasks);
-
-    if (effectiveDevelopers[0]) {
-      this.events.onAgentOutput(effectiveDevelopers[0].state.config.id,
-        `[QUEUE] ${queue.getPendingCount()} tasks, ${effectiveDevelopers.length} developers (work-stealing)`);
-    }
-
-    // Launch all developers as independent workers
-    const workerPromises = effectiveDevelopers.map(developer =>
-      this.developerWorker(developer, queue, batch, contextSection)
-    );
-
-    // Wait for all workers to finish (each finishes when queue is empty)
-    await Promise.all(workerPromises);
-  }
-
-  /**
-   * Independent developer worker - pulls tasks from queue until empty
-   */
-  private async developerWorker(
-    developer: { state: AgentState; session: ClaudeSession },
-    queue: TaskQueue,
-    _batch: TaskBatch,
-    contextSection: string
-  ): Promise<void> {
-    while (true) {
-      // Get next task from queue
-      const devTask = queue.getNextTask();
-      if (!devTask) {
-        // No more tasks - worker is done
-        break;
-      }
-
-      // Mark task as started
-      queue.startTask(developer.state.config.id, devTask);
-      await this.saveState();
-
-      const task = this.createTask(devTask.title, developer.state.config.id);
-      this.updateTaskStatus(task.id, 'running');
-
-      this.events.onAgentOutput(developer.state.config.id,
-        `[WORK-STEAL] Task ${devTask.id}: ${devTask.title}${devTask.complexity ? ` (${devTask.complexity})` : ''} [${queue.getPendingCount()} remaining]`);
-
-      const devPrompt = `${contextSection}<task>
-<id>${devTask.id}</id>
-<title>${devTask.title}</title>
-<description>${devTask.description}</description>
-${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
-${devTask.complexity ? `<complexity>${devTask.complexity}</complexity>` : ''}
-${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
-</task>
-
-<execution_context>
-<mode>PARALLEL</mode>
-<constraint>Focus ONLY on the files listed above. Other developers are working on other files simultaneously.</constraint>
-</execution_context>
-
-<instructions>Implement this task now. Create the necessary files.</instructions>`;
-
-      try {
-        const devOutput = await this.startAgent(developer.state.config.id, devPrompt);
-        await this.saveAgentLog(`developer-${developer.state.config.name}-task-${devTask.id}`, devOutput);
-
-        const success = developer.state.status === 'complete';
-        queue.completeTask(developer.state.config.id, success);
-        this.updateTaskStatus(task.id, success ? 'complete' : 'failed');
-      } catch (error) {
-        queue.completeTask(developer.state.config.id, false);
-        this.updateTaskStatus(task.id, 'failed');
-        this.events.onAgentOutput(developer.state.config.id, `[ERROR] Task ${devTask.id} failed: ${error}`);
-      }
-
-      await this.saveState();
-      // Loop continues - worker picks up next task immediately
-    }
-  }
-
-  /**
-   * Execute tasks sequentially with a single developer
-   */
-  private async executeTasksSequentially(
-    _batch: TaskBatch,
-    tasks: DevTask[],
-    developer: { state: AgentState; session: ClaudeSession },
-    contextSection: string
-  ): Promise<void> {
-    for (const devTask of tasks) {
-      if (devTask.status === 'complete') continue;
-
-      devTask.status = 'running';
-      devTask.assignedTo = developer.state.config.id;
-      await this.saveState();
-
-      const task = this.createTask(devTask.title, developer.state.config.id);
-      this.updateTaskStatus(task.id, 'running');
-
-      this.events.onAgentOutput(developer.state.config.id,
-        `[SEQUENTIAL] Task ${devTask.id}: ${devTask.title}${devTask.complexity ? ` (${devTask.complexity})` : ''}`);
-
-      const devPrompt = `${contextSection}<task>
-<id>${devTask.id}</id>
-<title>${devTask.title}</title>
-<description>${devTask.description}</description>
-${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
-${devTask.complexity ? `<complexity>${devTask.complexity}</complexity>` : ''}
-${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
-</task>
-
-<execution_context>
-<mode>SEQUENTIAL</mode>
-</execution_context>
-
-<instructions>Implement this task now. Create the necessary files.</instructions>`;
-
-      try {
-        const devOutput = await this.startAgent(developer.state.config.id, devPrompt);
-        await this.saveAgentLog(`developer-task-${devTask.id}`, devOutput);
-
-        devTask.status = developer.state.status === 'complete' ? 'complete' : 'failed';
-        this.updateTaskStatus(task.id, devTask.status);
-      } catch (error) {
-        devTask.status = 'failed';
-        this.updateTaskStatus(task.id, 'failed');
-        this.events.onAgentOutput(developer.state.config.id, `[ERROR] Task ${devTask.id} failed: ${error}`);
-      }
-
-      await this.saveState();
-    }
-  }
-
-  /**
-   * Re-run specific failed tasks
-   */
-  private async runRetryTasks(tasks: DevTask[], contextSection: string): Promise<void> {
-    const developers = this.getDeveloperAgents();
-    if (developers.length === 0) throw new Error('No developer agents found');
-
-    // Use first developer for retries (sequential to avoid conflicts)
-    const developer = developers[0]!;
-
-    for (const devTask of tasks) {
-      devTask.status = 'running';
-      devTask.assignedTo = developer.state.config.id;
-      await this.saveState();
-
-      const task = this.createTask(`Retry: ${devTask.title}`, developer.state.config.id);
-      this.updateTaskStatus(task.id, 'running');
-
-      this.events.onAgentOutput(developer.state.config.id,
-        `[RETRY] Task ${devTask.id}: ${devTask.title} (attempt ${devTask.retryCount})`);
-
-      const devPrompt = `${contextSection}<task>
-<id>${devTask.id}</id>
-<title>${devTask.title}</title>
-<description>${devTask.description}</description>
-${devTask.files ? `<files>${devTask.files.join(', ')}</files>` : ''}
-${devTask.complexity ? `<complexity>${devTask.complexity}</complexity>` : ''}
-${devTask.context ? `<task_context>${devTask.context}</task_context>` : ''}
-</task>
-
-<retry_context>
-<attempt>${devTask.retryCount}</attempt>
-<previous_failure>${devTask.lastFailureReason || 'Unknown'}</previous_failure>
-<instruction>This task failed QA review. Fix the issue identified above.</instruction>
-</retry_context>
-
-<instructions>Fix the issues and complete this task correctly.</instructions>`;
-
-      try {
-        const devOutput = await this.startAgent(developer.state.config.id, devPrompt);
-        await this.saveAgentLog(`developer-retry-${devTask.id}-attempt-${devTask.retryCount}`, devOutput);
-
-        devTask.status = developer.state.status === 'complete' ? 'complete' : 'failed';
-        this.updateTaskStatus(task.id, devTask.status);
-      } catch (error) {
-        devTask.status = 'failed';
-        this.updateTaskStatus(task.id, 'failed');
-        this.events.onAgentOutput(developer.state.config.id, `[ERROR] Retry of task ${devTask.id} failed: ${error}`);
-      }
-
-      await this.saveState();
-    }
-  }
-
-  /**
-   * Run testing phase - execute automated tests
-   */
-  private async runTestingPhase(): Promise<{ passed: boolean; output: string[] }> {
-    this.setPhase('testing');
-    const qaAgent = this.findAgentByRole('qa');
-    if (!qaAgent) throw new Error('QA agent not found');
-
-    const testCommand = await this.detectTestCommand();
-
-    const testTask = this.createTask('Run automated tests', qaAgent.state.config.id);
-    this.updateTaskStatus(testTask.id, 'running');
-
-    this.events.onAgentOutput(qaAgent.state.config.id, `[TESTING] Running: ${testCommand}`);
-
-    const contextSection = this.buildContextSection();
-    const testPrompt = `${contextSection}<task>Run the automated test suite and report results.</task>
-
-<instructions>
-<step>Execute: ${testCommand}</step>
-<step>Analyze the output carefully</step>
-<step>Report all test failures with details</step>
-</instructions>
-
-<output_format>
-Your output MUST end with a JSON block:
-\`\`\`json
-{
-  "testsPassed": <number>,
-  "testsFailed": <number>,
-  "testsSkipped": <number>,
-  "overallStatus": "PASS" | "FAIL",
-  "failures": [
-    {"test": "test name", "error": "error message"}
-  ],
-  "summary": "Brief summary of test results"
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [TESTING_COMPLETE] after the JSON.</completion_signal>`;
-
-    const output = await this.startAgent(qaAgent.state.config.id, testPrompt);
-    await this.saveAgentLog('testing', output);
-
-    // Parse test results
-    const results = this.parseTestOutput(output);
-    const passed = results?.overallStatus === 'PASS';
-
-    this.updateTaskStatus(testTask.id, passed ? 'complete' : 'failed');
-
-    // Store output for CEO
-    if (this.persistedState) {
-      this.persistedState.lastTestOutput = output;
-    }
-
-    this.events.onAgentOutput(qaAgent.state.config.id,
-      `[TESTING] ${passed ? 'PASSED' : 'FAILED'}${results?.summary ? ` - ${results.summary}` : ''}`);
-
-    await this.completePhase('testing');
-    return { passed, output };
-  }
-
-  /**
-   * Run CEO approval phase - final review and approval
-   */
-  private async runCeoApprovalPhase(
-    requirements: string,
-    testOutput: string[],
-    qaOutput: string[]
-  ): Promise<{ approved: boolean; feedback: string }> {
-    this.setPhase('ceo-approval');
-    const ceoAgent = this.findAgentByRole('ceo');
-    if (!ceoAgent) throw new Error('CEO agent not found');
-
-    const approvalTask = this.createTask('CEO final approval', ceoAgent.state.config.id);
-    this.updateTaskStatus(approvalTask.id, 'running');
-
-    const contextSection = this.buildContextSection();
-    const approvalPrompt = `${contextSection}<task>Review the project completion and provide final approval.</task>
-
-<original_requirements>
-${requirements}
-</original_requirements>
-
-<test_results>
-${testOutput.slice(-50).join('\n')}
-</test_results>
-
-<qa_review>
-${qaOutput.slice(-50).join('\n')}
-</qa_review>
-
-<instructions>
-<step>Review test results - are all critical tests passing?</step>
-<step>Review QA assessment - does it meet requirements?</step>
-<step>Decide: APPROVE if ready, REJECT if changes needed</step>
-<step>If rejecting, specify exactly what needs to be fixed</step>
-</instructions>
-
-<output_format>
-Your output MUST end with a JSON block:
-\`\`\`json
-{
-  "decision": "APPROVE" | "REJECT",
-  "confidence": "high" | "medium" | "low",
-  "summary": "Brief explanation of decision",
-  "requiredChanges": [
-    {"description": "What needs to be fixed", "priority": "high" | "medium"}
-  ]
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [CEO_DECISION] after the JSON.</completion_signal>`;
-
-    const output = await this.startAgent(ceoAgent.state.config.id, approvalPrompt);
-    await this.saveAgentLog('ceo-approval', output);
-
-    const decision = this.parseCeoDecision(output);
-    const approved = decision?.decision === 'APPROVE';
-
-    this.updateTaskStatus(approvalTask.id, approved ? 'complete' : 'failed');
-
-    const feedback = decision?.requiredChanges?.map(c => c.description).join('; ') || '';
-
-    this.events.onAgentOutput(ceoAgent.state.config.id,
-      `[CEO] Decision: ${decision?.decision || 'UNKNOWN'}${decision?.summary ? ` - ${decision.summary}` : ''}`);
-
-    if (approved) {
-      await this.completePhase('ceo-approval');
-    } else if (this.persistedState) {
-      // Store feedback for retry loop
-      this.persistedState.ceoFeedback = feedback;
-      this.persistedState.ceoApprovalAttempts = (this.persistedState.ceoApprovalAttempts || 0) + 1;
-      await this.saveState();
-    }
-
-    return { approved, feedback };
   }
 
   /**
@@ -1948,21 +1044,22 @@ Your output MUST end with a JSON block:
     await this.loadProjectContext();
     await this.loadProjectDocs();
 
-    // Load requirements content
     const requirements = await this.loadRequirements(requirementsPath);
-
-    // Initialize state with path, not content
     this.initPersistedState(requirementsPath);
     await this.saveState();
 
-    // Initialize agents if not done
     if (this.agents.size === 0) {
       this.initializeHierarchy();
     }
 
-    // Run planning phases (one-time)
-    await this.runPlanningPhase(requirements);
-    await this.runTaskBreakdownPhase(requirements);
+    const ctx = this.createPhaseContext();
+
+    // Run planning phases
+    this.setPhase('planning');
+    await runPlanningPhase(ctx, requirements);
+
+    this.setPhase('task-breakdown');
+    await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
 
     // Main execution loop with CEO approval
     const maxAttempts = 3;
@@ -1980,38 +1077,22 @@ Your output MUST end with a JSON block:
           `[CEO LOOP] Attempt ${attempts}/${maxAttempts} - Retrying with feedback`);
       }
 
-      // Development phase
-      await this.runDevelopmentPhase(requirements);
+      this.setPhase('development');
+      await runDevelopmentPhase(ctx, requirements);
 
-      // Testing phase
-      const testResults = await this.runTestingPhase();
+      this.setPhase('testing');
+      const testResults = await runTestingPhase(ctx);
       testOutput = testResults.output;
 
-      // QA Review phase
-      qaOutput = await this.runReviewPhaseWithOutput(requirements);
+      this.setPhase('review');
+      qaOutput = await runReviewPhase(ctx, requirements);
 
-      // CEO Approval phase
-      const ceoResult = await this.runCeoApprovalPhase(requirements, testOutput, qaOutput);
+      this.setPhase('ceo-approval');
+      const ceoResult = await runCeoApprovalPhase(ctx, requirements, testOutput, qaOutput);
       approved = ceoResult.approved;
 
       if (!approved && attempts < maxAttempts) {
-        // Reset phases for retry (keep planning and task-breakdown)
-        if (this.persistedState) {
-          this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
-            p => p === 'planning' || p === 'task-breakdown'
-          );
-          // Reset batch progress for re-execution
-          this.persistedState.currentBatchIndex = 0;
-          for (const batch of this.persistedState.batches) {
-            batch.status = 'pending';
-            for (const task of batch.tasks) {
-              task.status = 'pending';
-              task.assignedTo = undefined;
-            }
-          }
-          await this.saveState();
-        }
-
+        await this.resetForRetry();
         if (ceoAgent) {
           this.events.onAgentOutput(ceoAgent.state.config.id,
             `[CEO FEEDBACK] Changes required: ${ceoResult.feedback}`);
@@ -2033,33 +1114,31 @@ Your output MUST end with a JSON block:
   }
 
   /**
-   * Run initial planning phases (CEO planning + Staff task breakdown)
-   * Used by IndefiniteLoopController before starting the main loop
+   * Run initial planning phases for indefinite mode
    */
   async runInitialPhases(requirementsPath: string): Promise<string> {
     await this.initDirs();
     await this.loadProjectContext();
     await this.loadProjectDocs();
 
-    // Load requirements content
     const requirements = await this.loadRequirements(requirementsPath);
-
-    // Initialize state with path, not content
     this.initPersistedState(requirementsPath);
     await this.saveState();
 
-    // Initialize agents if not done
     if (this.agents.size === 0) {
       this.initializeHierarchy();
     }
 
-    // Run planning phases (one-time)
+    const ctx = this.createPhaseContext();
+
     if (!this.isPhaseComplete('planning')) {
-      await this.runPlanningPhase(requirements);
+      this.setPhase('planning');
+      await runPlanningPhase(ctx, requirements);
     }
 
     if (!this.isPhaseComplete('task-breakdown')) {
-      await this.runTaskBreakdownPhase(requirements);
+      this.setPhase('task-breakdown');
+      await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
     }
 
     return requirements;
@@ -2067,8 +1146,6 @@ Your output MUST end with a JSON block:
 
   /**
    * Replan the project based on user guidance
-   * CEO creates updated milestones, Staff Engineer breaks them into tasks
-   * Resets development progress so new tasks can be executed
    */
   async replanWithGuidance(guidance: string, requirements: string): Promise<boolean> {
     const ceoAgent = this.findAgentByRole('ceo');
@@ -2079,78 +1156,20 @@ Your output MUST end with a JSON block:
       return false;
     }
 
-    this.events.onAgentOutput(ceoAgent.state.config.id, '[REPLAN] Processing user guidance...');
-
-    // Step 1: Have CEO create updated milestones based on guidance
-    const contextSection = this.buildContextSection();
-    const currentPlan = this.persistedState?.plan;
-    const currentMilestones = currentPlan?.milestones
-      ? currentPlan.milestones.map(m => `- ${m.title}: ${m.description}`).join('\n')
-      : 'No previous milestones';
-
-    const ceoReplanPrompt = `${contextSection}<user_guidance_replan>
-<context>The user has provided guidance that requires replanning the project.</context>
-
-<user_guidance>
-${guidance}
-</user_guidance>
-
-<original_requirements>
-${requirements.slice(0, 3000)}
-</original_requirements>
-
-<current_milestones>
-${currentMilestones}
-</current_milestones>
-
-<instructions>
-<step>Analyze the user's guidance</step>
-<step>Determine what changes are needed to the project plan</step>
-<step>Create UPDATED milestones that incorporate the user's guidance</step>
-<step>Include both remaining original work AND new work from guidance</step>
-</instructions>
-
-<output_format>
-Briefly explain what changes you're making, then output the updated plan:
-\`\`\`json
-{
-  "milestones": [
-    {"id": 1, "title": "...", "description": "..."},
-    {"id": 2, "title": "...", "description": "..."}
-  ]
-}
-\`\`\`
-</output_format>
-
-<completion_signal>Signal completion with [REPLAN_COMPLETE] after the JSON.</completion_signal>
-</user_guidance_replan>`;
+    const ctx = this.createPhaseContext();
 
     this.setPhase('planning');
-    const ceoOutput = await this.startAgent(ceoAgent.state.config.id, ceoReplanPrompt);
-    await this.saveAgentLog('ceo-replan', ceoOutput);
+    const updatedPlan = await runReplanPhase(ctx, requirements, guidance);
 
-    // Parse the updated plan
-    const updatedPlan = this.parseJsonFromOutput(ceoOutput) as { milestones: Array<{ id: number; title: string; description: string }> } | null;
-
-    if (!updatedPlan?.milestones?.length) {
-      this.events.onAgentOutput(ceoAgent.state.config.id, '[REPLAN] Failed to parse updated milestones');
+    if (!updatedPlan) {
       return false;
     }
 
-    // Update persisted state with new plan
-    if (this.persistedState) {
-      this.persistedState.plan = updatedPlan;
-      this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
-        p => p !== 'task-breakdown' && p !== 'development' && p !== 'testing' && p !== 'review' && p !== 'ceo-approval'
-      );
-    }
+    // Run Staff Engineer to break down new milestones
+    this.setPhase('task-breakdown');
+    await runTaskBreakdownPhase(ctx, requirements, (n) => this.setMaxDevelopers(n));
 
-    this.events.onAgentOutput(ceoAgent.state.config.id, `[REPLAN] Created ${updatedPlan.milestones.length} updated milestones`);
-
-    // Step 2: Run Staff Engineer to break down new milestones
-    await this.runTaskBreakdownPhase(requirements);
-
-    // Step 3: Reset batch progress
+    // Reset batch progress
     if (this.persistedState) {
       this.persistedState.currentBatchIndex = 0;
       for (const batch of this.persistedState.batches) {
@@ -2168,56 +1187,42 @@ Briefly explain what changes you're making, then output the updated plan:
   }
 
   /**
-   * Run one development cycle: development → testing → QA → CEO approval
-   * Returns the result so the caller can decide whether to loop
-   * Used by IndefiniteLoopController for indefinite mode
+   * Run one development cycle for indefinite mode
    */
   async runOneCycle(requirements: string): Promise<{
     approved: boolean;
     feedback?: string;
     hasFailures: boolean;
   }> {
-    // Development phase
+    const ctx = this.createPhaseContext();
+
     if (!this.isPhaseComplete('development')) {
-      await this.runDevelopmentPhase(requirements);
+      this.setPhase('development');
+      await runDevelopmentPhase(ctx, requirements);
     }
 
-    // Testing phase
     let testOutput: string[] = [];
     if (!this.isPhaseComplete('testing')) {
-      const testResults = await this.runTestingPhase();
+      this.setPhase('testing');
+      const testResults = await runTestingPhase(ctx);
       testOutput = testResults.output;
     } else if (this.persistedState?.lastTestOutput) {
       testOutput = this.persistedState.lastTestOutput;
     }
 
-    // QA Review phase
     let qaOutput: string[] = [];
     if (!this.isPhaseComplete('review')) {
-      qaOutput = await this.runReviewPhaseWithOutput(requirements);
+      this.setPhase('review');
+      qaOutput = await runReviewPhase(ctx, requirements);
     } else if (this.persistedState?.lastQaOutput) {
       qaOutput = this.persistedState.lastQaOutput;
     }
 
-    // CEO Approval phase
-    const ceoResult = await this.runCeoApprovalPhase(requirements, testOutput, qaOutput);
+    this.setPhase('ceo-approval');
+    const ceoResult = await runCeoApprovalPhase(ctx, requirements, testOutput, qaOutput);
 
-    // If not approved, reset phases for next cycle
-    if (!ceoResult.approved && this.persistedState) {
-      this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
-        p => p === 'planning' || p === 'task-breakdown'
-      );
-      // Reset batch progress for re-execution
-      this.persistedState.currentBatchIndex = 0;
-      for (const batch of this.persistedState.batches) {
-        batch.status = 'pending';
-        for (const task of batch.tasks) {
-          task.status = 'pending';
-          task.assignedTo = undefined;
-        }
-      }
-      await this.saveState();
-
+    if (!ceoResult.approved) {
+      await this.resetForRetry();
       const ceoAgent = this.findAgentByRole('ceo');
       if (ceoAgent) {
         this.events.onAgentOutput(ceoAgent.state.config.id,
@@ -2230,101 +1235,5 @@ Briefly explain what changes you're making, then output the updated plan:
       feedback: ceoResult.feedback,
       hasFailures: !ceoResult.approved,
     };
-  }
-
-  /**
-   * Run review phase and return the output for CEO
-   */
-  private async runReviewPhaseWithOutput(requirements: string): Promise<string[]> {
-    this.setPhase('review');
-    const qaAgent = this.findAgentByRole('qa');
-    if (!qaAgent) throw new Error('QA agent not found');
-
-    const contextSection = this.buildContextSection();
-    const batches = this.persistedState?.batches || [];
-    const maxRetries = 2;
-    let retryRound = 0;
-    let lastOutput: string[] = [];
-
-    while (true) {
-      retryRound++;
-      const reviewTask = this.createTask(`Review implementation (round ${retryRound})`, qaAgent.state.config.id);
-      this.updateTaskStatus(reviewTask.id, 'running');
-
-      const completedTasks = batches.flatMap(b => b.tasks)
-        .filter(t => t.status === 'complete')
-        .map(t => `- Task ${t.id}: ${t.title}${t.files ? ` (${t.files.join(', ')})` : ''}`);
-
-      const qaPrompt = `${contextSection}<task>Review the code that was just created.</task>
-
-<requirements>
-${requirements}
-</requirements>
-
-<completed_tasks>
-${completedTasks.join('\n') || 'No tasks completed yet'}
-</completed_tasks>
-
-<instructions>
-<step>List the files that were created</step>
-<step>Verify they work correctly</step>
-<step>Check if implementation meets the requirements</step>
-<step>If any tasks failed, identify them by task ID in your JSON output</step>
-</instructions>`;
-
-      lastOutput = await this.startAgent(qaAgent.state.config.id, qaPrompt);
-      await this.saveAgentLog(`qa-round-${retryRound}`, lastOutput);
-
-      this.updateTaskStatus(reviewTask.id, qaAgent.state.status === 'complete' ? 'complete' : 'failed');
-
-      const qaResult = this.parseQAOutput(lastOutput);
-
-      if (!qaResult) {
-        this.events.onAgentOutput(qaAgent.state.config.id, '[QA] Could not parse QA output - assuming pass');
-        break;
-      }
-
-      this.events.onAgentOutput(qaAgent.state.config.id,
-        `[QA] Result: ${qaResult.overallStatus}${qaResult.comments ? ` - ${qaResult.comments}` : ''}`);
-
-      if (qaResult.overallStatus === 'PASS' || qaResult.failedTasks.length === 0) {
-        this.events.onAgentOutput(qaAgent.state.config.id, '[QA] All tasks passed review');
-        break;
-      }
-
-      // Handle retries (same as original runReviewPhase)
-      const tasksToRetry: DevTask[] = [];
-      for (const failure of qaResult.failedTasks) {
-        const task = batches.flatMap(b => b.tasks).find(t => t.id === failure.taskId);
-        if (!task) continue;
-
-        const currentRetries = task.retryCount || 0;
-        const taskMaxRetries = task.maxRetries || maxRetries;
-
-        if (currentRetries >= taskMaxRetries) {
-          task.status = 'failed';
-          task.lastFailureReason = failure.reason;
-          continue;
-        }
-
-        task.status = 'pending';
-        task.retryCount = currentRetries + 1;
-        task.lastFailureReason = failure.reason;
-        tasksToRetry.push(task);
-      }
-
-      if (tasksToRetry.length === 0) break;
-
-      await this.saveState();
-      await this.runRetryTasks(tasksToRetry, contextSection);
-    }
-
-    // Store for CEO
-    if (this.persistedState) {
-      this.persistedState.lastQaOutput = lastOutput;
-    }
-
-    await this.completePhase('review');
-    return lastOutput;
   }
 }

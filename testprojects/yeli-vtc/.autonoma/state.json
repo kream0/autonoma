@@ -1,0 +1,14 @@
+{
+  "version": 3,
+  "startedAt": "2025-12-29T03:15:35.047Z",
+  "updatedAt": "2025-12-29T03:15:35.049Z",
+  "phase": "planning",
+  "requirementsPath": "/mnt/c/Users/Karim/Documents/work/_tools/AI/autonoma/testprojects/yeli-vtc/requirements.md",
+  "hasProjectContext": false,
+  "plan": null,
+  "batches": [],
+  "currentBatchIndex": 0,
+  "currentTasksInProgress": [],
+  "completedPhases": [],
+  "maxDevelopers": 1
+}

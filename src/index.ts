@@ -6,7 +6,7 @@
  * Supports --stdout mode for token-economic plain-text monitoring.
  */
 
-import { readFile, appendFile, mkdir } from 'node:fs/promises';
+import { readFile, appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import blessed from 'blessed';
 import { Orchestrator } from './orchestrator.ts';
@@ -38,6 +38,12 @@ Usage:
   autonoma start <requirements.md> [options]     Start new orchestration
   autonoma resume <project-dir> [options]        Resume from saved state
   autonoma adopt <requirements.md> [options]     Adopt existing project
+  autonoma status <project-dir>                  Show current status
+  autonoma guide <project-dir> "message"         Send guidance to CEO
+  autonoma queue <project-dir> [--pending]       Show human queue messages
+  autonoma respond <project-dir> <id> "msg"      Respond to queued message
+  autonoma pause <project-dir>                   Pause running orchestration
+  autonoma logs <project-dir> [--tail N]         Show recent log entries
   autonoma demo                                  Run demo mode
   autonoma --help                                Show this help
 
@@ -74,6 +80,201 @@ Notes:
   - If CLAUDE.md exists in project folder, it will be used as context
   - Use tmux/screen for long-running tasks
 `);
+}
+
+/**
+ * Show status from status.json (Claude Code Control API)
+ */
+async function showStatus(projectDir: string): Promise<void> {
+  const statusPath = join(projectDir, '.autonoma', 'status.json');
+  try {
+    const content = await readFile(statusPath, 'utf-8');
+    const status = JSON.parse(content);
+    console.log('=== AUTONOMA STATUS ===');
+    console.log(`Phase: ${status.phase}`);
+    console.log(`Iteration: ${status.iteration}`);
+    console.log(`Progress: ${status.progress.completed}/${status.progress.total} tasks`);
+    console.log('');
+    console.log('Agents:');
+    for (const [name, state] of Object.entries(status.agents)) {
+      const icon = state === 'running' ? '[*]' : state === 'complete' ? '[+]' : '[ ]';
+      console.log(`  ${icon} ${name}: ${state}`);
+    }
+    console.log('');
+    console.log(`Updated: ${status.lastUpdate}`);
+    console.log('========================');
+  } catch {
+    console.error('No status available. Is Autonoma running?');
+    console.error(`Expected: ${statusPath}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Send guidance to running instance (Claude Code Control API)
+ */
+async function sendGuidance(projectDir: string, message: string): Promise<void> {
+  const guidancePath = join(projectDir, '.autonoma', 'guidance.txt');
+  const autonomaDir = join(projectDir, '.autonoma');
+  try {
+    await mkdir(autonomaDir, { recursive: true });
+    await writeFile(guidancePath, message, 'utf-8');
+    console.log(`Guidance sent to: ${projectDir}`);
+    console.log(`Message: ${message.slice(0, 100)}${message.length > 100 ? '...' : ''}`);
+    console.log('');
+    console.log('Autonoma will process this within 5 seconds.');
+  } catch (error) {
+    console.error(`Error writing guidance: ${error}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Respond to a queued human message
+ */
+async function respondToMessage(projectDir: string, messageId: string, response: string): Promise<void> {
+  const { Database } = await import('bun:sqlite');
+  const { HumanQueue } = await import('./human-queue/index.ts');
+
+  const dbPath = join(projectDir, '.autonoma', 'autonoma.db');
+  try {
+    const db = new Database(dbPath);
+    const queue = new HumanQueue(db);
+
+    const success = queue.respond(messageId, response);
+    if (success) {
+      console.log(`Response sent to message ${messageId}`);
+      console.log(`Response: ${response.slice(0, 100)}${response.length > 100 ? '...' : ''}`);
+    } else {
+      console.error(`Message ${messageId} not found or already responded`);
+      process.exit(1);
+    }
+
+    db.close();
+  } catch (error) {
+    console.error(`Error: ${error}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Show human queue messages
+ */
+async function showQueue(projectDir: string, _pendingOnly: boolean): Promise<void> {
+  const { Database } = await import('bun:sqlite');
+  const { HumanQueue } = await import('./human-queue/index.ts');
+
+  const dbPath = join(projectDir, '.autonoma', 'autonoma.db');
+  try {
+    const db = new Database(dbPath);
+    const queue = new HumanQueue(db);
+
+    const messages = queue.getPending();
+
+    if (messages.length === 0) {
+      console.log('No pending messages in queue.');
+      db.close();
+      return;
+    }
+
+    console.log('=== HUMAN QUEUE ===');
+    console.log(`${messages.length} pending message(s)\n`);
+
+    for (const m of messages) {
+      const icon = m.type === 'blocker' ? '[!] BLOCKER' :
+                   m.type === 'question' ? '[?] QUESTION' :
+                   '[A] APPROVAL';
+      const block = m.blocking ? ' (BLOCKING)' : '';
+      console.log(`${icon}${block}`);
+      console.log(`  ID: ${m.id}`);
+      console.log(`  Priority: ${m.priority}`);
+      console.log(`  Task: ${m.taskId || 'N/A'}`);
+      console.log(`  Content: ${m.content}`);
+      console.log(`  Created: ${m.createdAt}`);
+      console.log('');
+    }
+
+    console.log('Use: autonoma respond <project-dir> <id> "response"');
+
+    db.close();
+  } catch (error) {
+    console.error(`Error: ${error}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Pause a running orchestration
+ */
+async function pauseOrchestration(projectDir: string): Promise<void> {
+  const pausePath = join(projectDir, '.autonoma', 'pause.txt');
+  const autonomaDir = join(projectDir, '.autonoma');
+  try {
+    await mkdir(autonomaDir, { recursive: true });
+    await writeFile(pausePath, new Date().toISOString(), 'utf-8');
+    console.log('Pause signal sent.');
+    console.log('Autonoma will pause after the current task completes.');
+    console.log('');
+    console.log('To resume, delete the pause file:');
+    console.log(`  rm ${pausePath}`);
+  } catch (error) {
+    console.error(`Error: ${error}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Show recent log entries
+ */
+async function showLogs(projectDir: string, tailLines: number): Promise<void> {
+  const logDir = join(projectDir, '.autonoma', 'logs');
+  const { readdir, stat } = await import('node:fs/promises');
+
+  try {
+    const files = await readdir(logDir);
+    if (files.length === 0) {
+      console.log('No log files found.');
+      return;
+    }
+
+    // Get file stats and sort by modification time (newest first)
+    const fileStats = await Promise.all(
+      files.map(async (file) => {
+        const path = join(logDir, file);
+        const s = await stat(path);
+        return { file, path, mtime: s.mtime };
+      })
+    );
+    fileStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+    console.log('=== AUTONOMA LOGS ===');
+    console.log(`Log directory: ${logDir}`);
+    console.log(`Found ${files.length} log file(s)\n`);
+
+    // Show list of log files
+    console.log('Recent log files:');
+    for (const { file, mtime } of fileStats.slice(0, 10)) {
+      console.log(`  ${file}  (${mtime.toLocaleString()})`);
+    }
+    console.log('');
+
+    // Show tail of most recent log
+    const latestLog = fileStats[0];
+    if (latestLog) {
+      console.log(`=== Latest: ${latestLog.file} ===`);
+      const content = await readFile(latestLog.path, 'utf-8');
+      const lines = content.split('\n');
+      const tail = lines.slice(-tailLines).join('\n');
+      console.log(tail);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      console.log('No logs directory found. Run autonoma with --log or --stdout to generate logs.');
+    } else {
+      console.error(`Error: ${error}`);
+      process.exit(1);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -129,6 +330,79 @@ async function main(): Promise<void> {
     }
 
     await runOrchestration(requirementsPath, 'adopt', contextFiles);
+    return;
+  }
+
+  if (command === 'status') {
+    const projectDir = args[1];
+    if (!projectDir) {
+      console.error('Error: Please provide a project directory');
+      console.error('Usage: autonoma status <project-dir>');
+      process.exit(1);
+    }
+    await showStatus(resolve(projectDir));
+    return;
+  }
+
+  if (command === 'guide') {
+    const projectDir = args[1];
+    const message = args[2];
+    if (!projectDir || !message) {
+      console.error('Error: Please provide project directory and message');
+      console.error('Usage: autonoma guide <project-dir> "message"');
+      process.exit(1);
+    }
+    await sendGuidance(resolve(projectDir), message);
+    return;
+  }
+
+  if (command === 'respond') {
+    const projectDir = args[1];
+    const messageId = args[2];
+    const response = args[3];
+    if (!projectDir || !messageId || !response) {
+      console.error('Error: Please provide project directory, message ID, and response');
+      console.error('Usage: autonoma respond <project-dir> <message-id> "response"');
+      process.exit(1);
+    }
+    await respondToMessage(resolve(projectDir), messageId, response);
+    return;
+  }
+
+  if (command === 'queue') {
+    const projectDir = args[1];
+    if (!projectDir) {
+      console.error('Error: Please provide a project directory');
+      console.error('Usage: autonoma queue <project-dir> [--pending]');
+      process.exit(1);
+    }
+    const pendingOnly = args.includes('--pending');
+    await showQueue(resolve(projectDir), pendingOnly);
+    return;
+  }
+
+  if (command === 'pause') {
+    const projectDir = args[1];
+    if (!projectDir) {
+      console.error('Error: Please provide a project directory');
+      console.error('Usage: autonoma pause <project-dir>');
+      process.exit(1);
+    }
+    await pauseOrchestration(resolve(projectDir));
+    return;
+  }
+
+  if (command === 'logs') {
+    const projectDir = args[1];
+    if (!projectDir) {
+      console.error('Error: Please provide a project directory');
+      console.error('Usage: autonoma logs <project-dir> [--tail N]');
+      process.exit(1);
+    }
+    const tailIdx = args.indexOf('--tail');
+    const tailArg = tailIdx !== -1 ? args[tailIdx + 1] : undefined;
+    const tailLines = tailArg ? parseInt(tailArg, 10) : 50;
+    await showLogs(resolve(projectDir), tailLines);
     return;
   }
 

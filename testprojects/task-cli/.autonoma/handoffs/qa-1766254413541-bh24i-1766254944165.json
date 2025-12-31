@@ -1,0 +1,12 @@
+{
+  "agentId": "qa-1766254413541-bh24i",
+  "role": "qa",
+  "timestamp": "2025-12-20T18:22:24.146Z",
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalCostUsd": 0
+  },
+  "handoffBlock": null,
+  "replacementAgentId": "qa-1766254944164-lkm64"
+}

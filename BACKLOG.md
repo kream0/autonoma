@@ -1,246 +1,131 @@
 # Development Backlog
 
 **Purpose:** Long-term and future enhancement tasks
-**Last Updated:** December 20, 2025 (Session 26)
+**Last Updated:** December 30, 2025 (Session 43)
 
 ---
 
-## RECENTLY COMPLETED (Moved from Backlog)
+## COMPLETED: Claude Code Control API (Session 39)
 
-### Session Logging (Sessions 25-26)
-- `--stdout` auto-logs to `.autonoma/logs/session-{timestamp}.log` → **DONE**
-- `--log` flag for TUI mode → **DONE**
-- Log format `[MM:SS] [AGENT/STATUS] message` → **DONE**
-- User guidance captured in logs → **DONE**
-- Race condition bug fix in `flushLog()` → **DONE**
+**Goal:** Make Autonoma 100% controllable by Claude Code or any automation tool
 
-### Indefinite Autonomous Run Mode (Session 22)
-- `--indefinite` CLI flag → **DONE**
-- Context window monitoring (50/60/70/80%) → **DONE**
-- XML handoff block parsing → **DONE**
-- Agent replacement with handoff injection → **DONE**
-- Health monitoring (exit, timeout, errors) → **DONE**
-- Watchdog system → **DONE**
-- Browser project detection for E2E → **DONE**
-- Pause keybinding (`p`) → **DONE**
+### Sprint 7: File-Based Control -> DONE
 
-### Session Persistence
-- Save session state on exit → **DONE**
-- Resume from saved state → **DONE**
-- Adopt existing projects → **DONE**
+| Task | Status | Description |
+|------|--------|-------------|
+| Status file writer | DONE | Write `.autonoma/status.json` on state changes |
+| Guidance file watcher | DONE | Poll `.autonoma/guidance.txt`, inject to CEO |
+| `autonoma status` command | DONE | CLI to read and display status |
+| `autonoma guide` command | DONE | CLI to write guidance file |
 
-### Parallel Execution
-- Multiple developer agents → **DONE** (up to 6)
-- Batched task execution → **DONE**
-- Promise.all for parallel work → **DONE**
-
-### Complexity-Aware Allocation (Session 8)
-- Task complexity analysis → **DONE**
-- Staff Engineer recommendations → **DONE**
-- Per-batch parallelism limits → **DONE**
-- `--max-developers N` CLI flag → **DONE**
+**Usage:**
+```bash
+autonoma status ./project          # Check current status
+autonoma guide ./project "msg"     # Send guidance to CEO
+```
 
 ---
 
-## ACTIVE DEVELOPMENT (Next Sessions)
+## COMPLETED: Memorai Integration & Supervisor Features (Session 43)
 
-### Indefinite Mode: Core Testing Complete
-**Priority:** HIGH
-**Status:** Core Flow Verified Working (Session 24)
+**Goal:** Integrate memorai package and add supervisor reliability features
 
-**Completed Wiring (Session 23):**
-- [x] Connect IndefiniteLoopController.run() to orchestrator phases
-- [x] Add `runInitialPhases()` and `runOneCycle()` to orchestrator
-- [x] Wire controller execution in index.ts (TUI + Stdout)
-- [x] TypeScript compiles with no errors
+### Phase 3: Supervisor Features -> DONE
+| Task | Status | Description |
+|------|--------|-------------|
+| Verification system | DONE | Auto-run tests/build/typecheck after tasks |
+| Human queue | DONE | Queue blockers for human resolution |
+| Retry context | DONE | Inject error context into retries |
+| 40% context reminder | DONE | Keep developers focused |
+| Priority rebalancing | DONE | Boost old/stuck tasks |
 
-**Testing Completed (Session 24):**
-- [x] Test with simple project (Hello Autonoma) - PASSED
-- [x] Loop iteration messages verified: `[INDEFINITE/LOOP] Iteration 1`
-- [x] Parallel developer execution verified (work-stealing queue)
-- [x] Complexity-aware allocation verified
+### Phase 4: Memorai Integration -> DONE
+| Task | Status | Description |
+|------|--------|-------------|
+| Add memorai dependency | DONE | Linked locally (file:../memorai) |
+| Search before phases | DONE | Planning + development get memories |
+| Store learnings | DONE | After successful task completion |
 
-**User Guidance System (Session 24):**
-- [x] Implement user input capture when paused (textbox overlay)
-- [x] CEO processes user guidance and adjusts plan
+### Deferred (Completed in Session 44)
+| Task | Status | Notes |
+|------|--------|-------|
+| Wave 6: Cleanup legacy memory | DONE | Removed src/memory/, memorai is sole memory system |
 
-**Session Logging (Session 25-26):**
-- [x] Implemented `--stdout` auto-logging
-- [x] Implemented `--log` flag for TUI mode
-- [x] Fixed race condition in `flushLog()` causing duplicates
-- [x] Tested user guidance capture in logs
-
-**Remaining Tasks:**
-- [ ] Test TUI mode (status bar, pause keybinding, textbox overlay)
-- [ ] Test with medium complexity project
-- [ ] Add E2E agent spawning when browser project detected
-
----
-
-### UX Enhancement: Show Developer Idle Reason
-**Priority:** LOW
-**Status:** Planned
-
-**Problem:** When developers are idle (e.g., only 1 task pending), the TUI doesn't explain why.
-
-**Tasks:**
-- [ ] Show "Idle - No pending tasks" status for unused developers
-- [ ] Display batch's `maxParallelTasks` limit in TUI
-- [ ] Add tooltip/info for `--max-developers` vs actual concurrency
+**Usage:**
+```bash
+autonoma queue ./project              # View pending blockers
+autonoma respond ./project <id> "fix" # Respond to blocker
+autonoma pause ./project              # Pause orchestration (Session 44)
+autonoma logs ./project [--tail N]    # View logs (Session 44)
+```
 
 ---
 
-### Optional: Force Parallel Override Flag
-**Priority:** LOW
-**Status:** Planned
+## COMPLETED: Memorai Pattern Refactor (Sessions 33-37)
 
-**Problem:** Users may want to override Staff Engineer's `maxParallelTasks` limit.
+**Goal:** Adopt best practices from Memorai tool for reliability & learning
 
-**Tasks:**
-- [ ] Add `--force-parallel` flag to ignore batch `maxParallelTasks`
-- [ ] Document risks (may cause context overflow in complex tasks)
+### Sprint 1: Foundation -> DONE
+- Modular directory structure (types/, protocol/, db/, memory/)
+- Split types.ts into focused modules
+- Backwards-compatible re-exports
 
----
+### Sprint 2: Protocols -> DONE
+- Daemon protocol types (HEARTBEAT, STATUS, CHECKPOINT, etc.)
+- Worker protocol types (TaskBundle, WorkerResult)
+- Protocol parser for structured agent output
+- SQLite schema with FTS5 for memory
 
-## RECENTLY COMPLETED (Sessions 11-13)
+### Sprint 3-5: Integration -> DONE + TESTED
+- AutonomaDb initialized in orchestrator
+- MemoryStore, MemoryWorkflow, MemoryRetrieval integrated
+- ProtocolParser connected to task completion
+- Developer prompts updated with daemon protocol
+- Memory retrieval before tasks, storage after completion
 
-### P0 Bug Investigation - NOT A BUG (Session 13)
-- Investigated "only 1 agent runs" issue
-- Determined it's expected behavior: only 1 pending task in current batch
-- `--max-developers` sets maximum available, `maxParallelTasks` limits per-batch concurrency
-
-### Token Display Bug Fix - COMPLETE (Session 11)
-Removed cost display from dashboard.ts and stats.ts.
-
-### Work-Stealing Queue - COMPLETE (Session 11)
-Created `src/queue.ts` with TaskQueue class.
-
-### QA Feedback Loop - COMPLETE (Session 11)
-QA → Developer retry loop with max 2 retries.
-
-### --max-developers Flag Fix - COMPLETE (Session 12)
-Fixed flag being ignored on resume.
+### Sprint 6: Decompose Orchestrator -> DONE
+- Created `src/phases/` directory with 10 modules
+- Extracted prompts, parsers, and all phase functions
+- PhaseContext interface for dependency injection
+- Reduced orchestrator.ts from 2485 to 1132 lines (54%)
 
 ---
 
 ## FUTURE ENHANCEMENTS
 
-### Better TUI Layout
-**Priority:** MEDIUM
+### Performance & Reliability
 
-**Tasks:**
-- Dynamic tile sizing based on agent count
-- Horizontal/vertical split options
-- Collapsible tiles for inactive agents
-- Full-screen focus mode improvements
-- Better layout for 6 developers
+| Feature | Effort | Notes |
+|---------|--------|-------|
+| Exploration cache | 2 hr | CEO caches file tree to reduce re-exploration |
+| Crash recovery handoff | 2 hr | Synthetic handoff from git diff on restart |
+| Iteration counter | 30 min | Show "Attempt 2/3" in developer prompts |
 
----
+### User Experience
 
-### Git Integration
-**Priority:** MEDIUM
+| Feature | Effort | Notes |
+|---------|--------|-------|
+| Progress bar in TUI | 1 hr | Visual progress indicator |
+| Task dependency graph | 2 hr | Show task relationships in task view |
+| Cost estimation | 1 hr | Estimate tokens/cost before starting |
 
-**Tasks:**
-- Auto-create branches for agent work
-- Git worktree support for parallel work
-- Commit summary in dashboard
-- PR creation after QA approval
+### Integration
 
----
-
-### Custom Agent Prompts
-**Priority:** MEDIUM
-
-**Tasks:**
-- Configurable system prompts per role
-- Template variables for prompts
-- Prompt library/presets
-- Load prompts from project `.autonoma/prompts/`
+| Feature | Effort | Notes |
+|---------|--------|-------|
+| MCP server mode | 4 hr | Run as MCP server for Claude Desktop |
+| GitHub Actions | 2 hr | Action to run Autonoma in CI |
+| VS Code extension | 8 hr | Sidebar panel for Autonoma control |
 
 ---
 
-### Configuration File Support
-**Priority:** LOW
+## ARCHIVED
 
-**Tasks:**
-- `.autonomarc` or `autonoma.config.ts`
-- Define agent hierarchy
-- Custom tile layouts
-- Keyboard shortcut remapping
-- Default model selection
+### QA Wrong Project Fix (Session 32)
+- Root cause: Claude Code agents ignore cwd, need explicit path -> IDENTIFIED
+- Added `<project_path>` block to `buildContextSection()` -> DONE
+- Enhanced QA test/review prompts with explicit path + warnings -> DONE
 
 ---
 
-### CLI Enhancements
-**Priority:** LOW
-
-**Tasks:**
-- `--model <model-id>` flag to change Claude model
-- `--no-tui` flag for headless operation
-- `--verbose` flag for debug output
-
----
-
-### Multi-Project Support
-**Priority:** LOW
-
-**Tasks:**
-- Support multiple simultaneous projects
-- Project switching via keyboard shortcut
-- Separate agent pools per project
-
----
-
-### Performance Metrics
-**Priority:** LOW
-
-**Tasks:**
-- Track task completion times
-- Agent efficiency comparison
-- Historical stats across sessions
-
----
-
-### Log Export & Search
-**Priority:** LOW
-
-**Tasks:**
-- Export session logs to markdown
-- Searchable log viewer in TUI
-- Filter logs by agent/phase
-- Timeline view of all agent activity
-
----
-
-## ARCHIVED (From Old Python Version)
-
-The following items were part of the old Python implementation and are no longer relevant:
-
-- ~~Electrobun desktop integration~~
-- ~~MCP server integration~~
-- ~~SQLite state management~~
-- ~~anthropic SDK integration~~
-- ~~pexpect PTY wrapper~~
-- ~~Rate limit handling~~
-- ~~Token budget tracking~~
-
----
-
-## Notes
-
-### Adding New Tasks
-When adding new backlog items, include:
-1. **Priority level** (LOW/MEDIUM/HIGH/CRITICAL)
-2. **Task list** (concrete steps)
-3. **Why it matters** (user benefit)
-
-### Moving Tasks to TODO
-Items move from BACKLOG to TODO when:
-- They become critical for user experience
-- Core functionality depends on them
-- User demand increases
-
----
-
-**Last Review:** December 20, 2025 (Session 26)
-
+**Archive Policy:** Move completed items after 2 sessions

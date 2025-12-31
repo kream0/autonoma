@@ -273,6 +273,12 @@ export class IndefiniteLoopController {
       this.healthMonitor.registerAgent(agent.config.id);
     }
 
+    // Start file-based guidance watcher (Claude Code Control API)
+    this.orchestrator.startGuidanceWatcher(async (guidance) => {
+      console.log(`[FILE GUIDANCE] Received: ${guidance.slice(0, 100)}...`);
+      await this.processCeoGuidance(guidance);
+    });
+
     try {
       // Main loop
       while (this.isRunning && this.currentIteration < this.config.maxLoopIterations) {
@@ -322,6 +328,7 @@ export class IndefiniteLoopController {
       }
     } finally {
       this.healthMonitor.stopPeriodicChecks();
+      this.orchestrator.stopGuidanceWatcher();
       this.isRunning = false;
     }
   }

@@ -1,75 +1,73 @@
 # Last Session Summary
 
-## Session 26 - December 20, 2025
+## Session 45 - December 31, 2025
 
 ### Focus
-Session Logging Bug Fix & Verification
+TypeScript Bug Fix - Bun FileSink API
 
 ---
 
 ## What Was Accomplished
 
-### Session Logging Bug Fix ✅
+### 1. Fixed TypeScript Error in session.ts
+- `src/session.ts:133` had error: `Property 'getWriter' does not exist on type 'FileSink'`
+- Bun's `Bun.spawn()` with `stdin: 'pipe'` returns a `FileSink`, not a `WritableStream`
+- Fixed by changing from `getWriter()/write()/close()` to direct `write()/end()` calls
 
-**Files Modified:** `src/index.ts`
+### 2. Verified Stdout Mode
+- Ran `autonoma resume` on facturai project in stdout mode
+- Confirmed no runtime errors
+- Project was in "failed" state so exited immediately (expected behavior)
 
-**Bug Found:** Race condition in `flushLog()` causing duplicate log lines
-- Buffer was cleared asynchronously AFTER the file write started
-- When buffer hit 20 items, multiple flushes could occur before `logBuffer = []` ran
-- Result: First 20+ lines were written multiple times
+### 3. Verified TUI Mode Compilation
+- Ran typecheck: `bun run typecheck` passes
+- Briefly tested TUI startup - no errors
 
-**Fix Applied:**
-```typescript
-// Before (buggy):
-await appendFile(this.logPath, this.logBuffer.join('\n') + '\n');
-this.logBuffer = [];  // Cleared async - race condition!
-
-// After (fixed):
-const toWrite = this.logBuffer;
-this.logBuffer = [];  // Cleared synchronously - no race!
-await appendFile(this.logPath, toWrite.join('\n') + '\n');
-```
-
-**Fixed in both:**
-1. `StdoutApp.flushLog()` (line ~540)
-2. `App.flushLog()` (line ~1000)
-
-### Session Logging Verification ✅
-
-**Test 1: Basic logging**
-- Created tiny test project (greeting.txt)
-- Verified log file created at `.autonoma/logs/session-{timestamp}.log`
-- Format correct: `[MM:SS] [AGENT/STATUS] message`
-
-**Test 2: User guidance via stdin**
-- Created calculator project
-- Sent guidance mid-run: "Also add subtract and multiply functions"
-- Log captured: `[00:39] [USER/GUIDANCE] Queued: Also add subtract and multiply functions`
-- CEO replanned and developer implemented all 3 functions
-
-**Test Results:**
-| Metric | Before Fix | After Fix |
-|--------|-----------|-----------|
-| Log lines | 2164 | 298 |
-| File size | 141KB | 22KB |
-| Duplicates | Yes | None |
+### 4. Updated README Architecture
+- Updated architecture section to reflect current module structure
+- Added phases/, verification/, human-queue/, retry/ modules
 
 ---
 
-## Previous Session (25)
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/session.ts` | Fixed stdin write API for Bun FileSink (lines 132-142) |
+| `README.md` | Updated architecture section with new modules |
+
+---
+
+## Current Project Status
+
+- **Build:** `bun run typecheck` passes
+- **Runtime:** Both stdout and TUI modes work
+- **Test command:** `bun run dev -- resume /path/to/project --stdout`
+
+---
+
+## For Next Agent
+
+### What Was Completed
+- Fixed Bun FileSink API usage in session.ts
+- Verified both output modes work
+- Updated README architecture
+
+### Next Steps
+1. Publish memorai to NPM
+2. Clean up dead code in db/schema.ts
+3. Add orchestrator pause file polling
+
+---
+
+## Previous Session (44)
 
 ### Focus
-Added Session Logging Feature
+Testing & Bug Fix for Verification and Human Queue Systems
 
-**Features Added:**
-1. Stdout mode: Auto-logs to `.autonoma/logs/session-{timestamp}.log`
-2. TUI mode: Optional `--log` flag
-3. Log format: `[MM:SS] [AGENT/STATUS] message`
-
----
-
-## Next Immediate Actions
-
-1. **Test TUI mode** with indefinite + logging
-2. **Test context handoff** (requires longer run)
-3. **Consider adding tests** for logging functionality
+### What Was Accomplished
+- Fixed bun.lock detection bug in `src/verification/detector.ts`
+- Tested verification system end-to-end
+- Tested human queue CLI commands end-to-end
+- Wave 6 Complete: Removed legacy memory code
+- Added `autonoma pause` and `autonoma logs` commands
