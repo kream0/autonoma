@@ -85,6 +85,9 @@ ${requirements}
     if (ctx.persistedState) {
       ctx.persistedState.plan = plan;
     }
+    if (plan.summary) {
+      ctx.emitOutput(ceoAgent.state.config.id, `[CEO] Decision: ${plan.summary}`);
+    }
     ctx.emitOutput(ceoAgent.state.config.id, `[INFO] Plan created with ${plan.milestones.length} milestones`);
   } else {
     ctx.emitOutput(ceoAgent.state.config.id, '[Note: No structured plan found, using direct execution]');
@@ -155,6 +158,9 @@ Your output MUST end with a JSON block containing the plan for remaining work:
   if (plan?.milestones?.length) {
     if (ctx.persistedState) {
       ctx.persistedState.plan = plan;
+    }
+    if (plan.summary) {
+      ctx.emitOutput(ceoAgent.state.config.id, `[CEO] Decision: ${plan.summary}`);
     }
     ctx.emitOutput(ceoAgent.state.config.id, `[ADOPT] Found ${plan.milestones.length} milestones for remaining work`);
   } else {
@@ -239,6 +245,9 @@ Briefly explain what changes you're making, then output the updated plan:
     );
   }
 
+  if (updatedPlan.summary) {
+    ctx.emitOutput(ceoAgent.state.config.id, `[CEO] Decision: ${updatedPlan.summary}`);
+  }
   ctx.emitOutput(ceoAgent.state.config.id, `[REPLAN] Created ${updatedPlan.milestones.length} updated milestones`);
   return updatedPlan;
 }

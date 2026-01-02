@@ -15,11 +15,19 @@ import { TileManager } from './tui/tiles.ts';
 import { TasksView } from './tui/views/tasks.ts';
 import { StatsView } from './tui/views/stats.ts';
 import { DashboardView } from './tui/views/dashboard.ts';
+import { NotificationsView } from './tui/views/notifications.ts';
 import { IndefiniteLoopController } from './indefinite.ts';
+import { HumanQueue } from './human-queue/index.ts';
 import type { ViewMode } from './types.ts';
 
 /** Check if stdout mode is enabled */
 const STDOUT_MODE = process.argv.includes('--stdout');
+
+/** Exit codes for CI/CD integration */
+const EXIT_SUCCESS = 0;
+const EXIT_FAILED = 1;
+const EXIT_TIMEOUT = 2;
+const EXIT_BLOCKED = 3;
 
 /** Check if indefinite mode is enabled */
 const INDEFINITE_MODE = process.argv.includes('--indefinite');
@@ -44,6 +52,7 @@ Usage:
   autonoma respond <project-dir> <id> "msg"      Respond to queued message
   autonoma pause <project-dir>                   Pause running orchestration
   autonoma logs <project-dir> [--tail N]         Show recent log entries
+  autonoma doctor                                Check system health
   autonoma demo                                  Run demo mode
   autonoma --help                                Show this help
 
@@ -70,8 +79,15 @@ Keyboard Shortcuts (in TUI):
   t        Task list view
   s        Stats view
   d        Dashboard view
+  n        Notifications (human queue messages)
   p        Pause (indefinite mode) - provide guidance
   q        Quit
+
+Exit Codes (for CI/CD):
+  0 = Success (project complete)
+  1 = Failed (orchestration error)
+  2 = Timeout (context limit or time limit reached)
+  3 = Blocked (human intervention required)
 
 Notes:
   - State is saved to <project>/.autonoma/state.json
@@ -405,9 +421,162 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'doctor') {
+    await runDoctor();
+    return;
+  }
+
   console.error(`Unknown command: ${command}`);
   showHelp();
   process.exit(1);
+}
+
+/**
+ * Run system health checks
+ */
+async function runDoctor(): Promise<void> {
+  console.log('=== AUTONOMA DOCTOR ===\n');
+  console.log('Checking system health...\n');
+
+  let allPassed = true;
+
+  // Check 1: Bun version
+  process.stdout.write('Bun runtime............. ');
+  try {
+    const bunVersion = Bun.version;
+    console.log(`✓ v${bunVersion}`);
+  } catch {
+    console.log('✗ Not running in Bun');
+    allPassed = false;
+  }
+
+  // Check 2: Claude CLI
+  process.stdout.write('Claude CLI.............. ');
+  try {
+    const proc = Bun.spawn(['claude', '--version'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    if (proc.exitCode === 0) {
+      console.log(`✓ ${output.trim().split('\n')[0]}`);
+    } else {
+      console.log('✗ Not available');
+      allPassed = false;
+    }
+  } catch {
+    console.log('✗ Not found in PATH');
+    allPassed = false;
+  }
+
+  // Check 3: Node.js (for some dependencies)
+  process.stdout.write('Node.js (optional)...... ');
+  try {
+    const proc = Bun.spawn(['node', '--version'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    if (proc.exitCode === 0) {
+      console.log(`✓ ${output.trim()}`);
+    } else {
+      console.log('- Skipped');
+    }
+  } catch {
+    console.log('- Not installed (optional)');
+  }
+
+  // Check 4: Git
+  process.stdout.write('Git..................... ');
+  try {
+    const proc = Bun.spawn(['git', '--version'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    if (proc.exitCode === 0) {
+      const version = output.trim().replace('git version ', '');
+      console.log(`✓ ${version}`);
+    } else {
+      console.log('✗ Not available');
+      allPassed = false;
+    }
+  } catch {
+    console.log('✗ Not found in PATH');
+    allPassed = false;
+  }
+
+  // Check 5: Disk space (current directory)
+  process.stdout.write('Disk space.............. ');
+  try {
+    const proc = Bun.spawn(['df', '-h', '.'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    if (proc.exitCode === 0) {
+      const lines = output.trim().split('\n');
+      if (lines.length >= 2) {
+        const parts = lines[1]!.split(/\s+/);
+        const available = parts[3] || 'unknown';
+        const usedPercent = parts[4] || '0%';
+        const percentNum = parseInt(usedPercent, 10);
+        if (percentNum > 90) {
+          console.log(`⚠ ${available} available (${usedPercent} used) - LOW`);
+        } else {
+          console.log(`✓ ${available} available (${usedPercent} used)`);
+        }
+      } else {
+        console.log('✓ OK');
+      }
+    } else {
+      console.log('- Skipped');
+    }
+  } catch {
+    console.log('- Could not check');
+  }
+
+  // Check 6: SQLite (for database)
+  process.stdout.write('SQLite (bun:sqlite)..... ');
+  try {
+    const { Database } = await import('bun:sqlite');
+    const db = new Database(':memory:');
+    db.exec('SELECT 1');
+    db.close();
+    console.log('✓ Working');
+  } catch {
+    console.log('✗ Not available');
+    allPassed = false;
+  }
+
+  // Check 7: Memorai availability (optional)
+  process.stdout.write('Memorai database........ ');
+  try {
+    const { MemoraiClient } = await import('memorai');
+    const client = new MemoraiClient();
+    if (client.isInitialized()) {
+      console.log('✓ Initialized');
+    } else {
+      console.log('- Not initialized (run: memorai init)');
+    }
+  } catch {
+    console.log('- Not available (optional)');
+  }
+
+  // Summary
+  console.log('\n========================');
+  if (allPassed) {
+    console.log('✓ All required checks passed');
+    console.log('Autonoma is ready to run!');
+  } else {
+    console.log('✗ Some checks failed');
+    console.log('Please install missing dependencies.');
+    process.exit(1);
+  }
 }
 
 async function runDemo(): Promise<void> {
@@ -565,10 +734,39 @@ async function runStdoutOrchestration(
     }
 
     app.printSummary();
+
+    // Flush final status and kill all agent processes before exiting
+    await app.orchestrator.flushStatus();
+    app.orchestrator.killAll();
+
+    // Exit with appropriate code for CI/CD
+    const exitCode = getExitCode(app.orchestrator.currentPhase);
+    process.exit(exitCode);
   } catch (error) {
     console.error(`[ERROR] ${error}`);
+    await app.orchestrator.flushStatus();
+    app.orchestrator.killAll();
     app.printSummary();
-    process.exit(1);
+    process.exit(EXIT_FAILED);
+  }
+}
+
+/**
+ * Determine exit code based on final orchestration phase
+ */
+function getExitCode(phase: string): number {
+  switch (phase) {
+    case 'complete':
+      return EXIT_SUCCESS;
+    case 'failed':
+      return EXIT_FAILED;
+    case 'timeout':
+      return EXIT_TIMEOUT;
+    case 'blocked':
+      return EXIT_BLOCKED;
+    default:
+      // Any other state (idle, running, etc.) is considered incomplete
+      return EXIT_FAILED;
   }
 }
 
@@ -843,6 +1041,19 @@ class StdoutApp {
   }
 }
 
+/** Phase descriptions for status bar display */
+const PHASE_DESCRIPTIONS: Record<string, string> = {
+  idle: 'Waiting',
+  planning: 'CEO planning',
+  'task-breakdown': 'Breaking down tasks',
+  development: 'Developing',
+  testing: 'Testing',
+  review: 'QA review',
+  'ceo-approval': 'CEO approval',
+  complete: 'Complete',
+  failed: 'Failed',
+};
+
 /**
  * Main Application class that wires everything together
  */
@@ -853,6 +1064,7 @@ class App {
   public tasksView: TasksView;
   public statsView: StatsView;
   public dashboardView: DashboardView;
+  public notificationsView: NotificationsView;
   public indefiniteController?: IndefiniteLoopController;
 
   private currentView: ViewMode = 'tiles';
@@ -865,6 +1077,9 @@ class App {
   private pendingGuidance: string | null = null;
   private logPath?: string;
   private logBuffer: string[] = [];
+  private humanQueue?: HumanQueue;
+  private notificationPollInterval?: ReturnType<typeof setInterval>;
+  private currentIteration: number = 0;
 
   constructor(workingDir: string, indefiniteMode: boolean = false, enableLogging: boolean = false) {
     this.startTime = new Date();
@@ -884,6 +1099,7 @@ class App {
       onFocus: () => this.tileManager.focus(),
       onUnfocus: () => this.tileManager.unfocus(),
       onPause: indefiniteMode ? () => this.togglePause() : undefined,
+      onNotifications: () => this.toggleNotifications(),
     });
 
     // Create tile manager
@@ -893,7 +1109,14 @@ class App {
     this.tasksView = new TasksView(this.screen.screen);
     this.statsView = new StatsView(this.screen.screen);
     this.dashboardView = new DashboardView(this.screen.screen);
+    this.notificationsView = new NotificationsView(this.screen.screen, (id, response) => {
+      // Handle response to human queue message
+      this.humanQueue?.respond(id, response);
+    });
     this.statsView.setStartTime(this.startTime);
+
+    // Initialize human queue for notifications (database created by orchestrator)
+    this.initHumanQueue(workingDir);
 
     // Create orchestrator with event handlers that update the TUI
     this.orchestrator = new Orchestrator(workingDir, {
@@ -915,6 +1138,12 @@ class App {
       onPhaseChange: (phase) => {
         this.updateStatusBar();
         this.logToFile(`[PHASE] ═══════════════ ${phase.toUpperCase()} ═══════════════`);
+      },
+      onAgentsChanged: () => {
+        // Refresh tiles when developers are spawned/cleaned up
+        this.tileManager.createTiles(this.orchestrator.getAgents());
+        this.updateStatusBar();
+        this.screen.render();
       },
     });
 
@@ -939,6 +1168,8 @@ class App {
         this.orchestrator,
         {
           onLoopIteration: (iteration) => {
+            this.currentIteration = iteration;
+            this.updateStatusBar();
             const agents = this.orchestrator.getAgents();
             const ceo = agents.find(a => a.config.role === 'ceo');
             if (ceo) {
@@ -1136,7 +1367,8 @@ class App {
       case 'stats':
         this.statsView.update(
           this.orchestrator.getAgents(),
-          this.orchestrator.getTasks()
+          this.orchestrator.getTasks(),
+          this.getContextUsageMap()
         );
         this.statsView.show();
         break;
@@ -1176,7 +1408,8 @@ class App {
     if (this.statsView.visible) {
       this.statsView.update(
         this.orchestrator.getAgents(),
-        this.orchestrator.getTasks()
+        this.orchestrator.getTasks(),
+        this.getContextUsageMap()
       );
     }
     if (this.dashboardView.visible) {
@@ -1194,7 +1427,8 @@ class App {
     const minutes = Math.floor(duration / 60);
     const seconds = duration % 60;
 
-    const phase = this.orchestrator.currentPhase.toUpperCase();
+    const phase = this.orchestrator.currentPhase;
+    const phaseDesc = PHASE_DESCRIPTIONS[phase] || phase;
     const viewIndicator = this.currentView.toUpperCase();
 
     // Build status parts
@@ -1202,24 +1436,32 @@ class App {
       ` {bold}AUTONOMA{/bold}`,
     ];
 
-    // Add indefinite mode indicator
+    // Add indefinite mode indicator with iteration count
     if (this.indefiniteMode) {
       if (this.isPaused) {
         parts.push(`{yellow-fg}[PAUSED]{/yellow-fg}`);
       } else {
-        parts.push(`{green-fg}[INDEFINITE]{/green-fg}`);
+        const iterLabel = this.currentIteration > 0 ? ` #${this.currentIteration}` : '';
+        parts.push(`{green-fg}[INDEFINITE${iterLabel}]{/green-fg}`);
       }
     }
 
-    parts.push(`Phase: ${phase}`);
+    parts.push(`{cyan-fg}${phaseDesc}{/cyan-fg}`);
     parts.push(`View: ${viewIndicator}`);
     parts.push(`Agents: ${running} running, ${complete}/${total} complete`);
+
+    // Show notification count if any pending
+    const notificationCount = this.notificationsView.getMessageCount();
+    if (notificationCount > 0) {
+      parts.push(`{yellow-fg}[${notificationCount} msg]{/yellow-fg}`);
+    }
+
     parts.push(`${minutes}m ${seconds}s`);
 
-    // Shortcuts - include pause if in indefinite mode
+    // Shortcuts - include pause if in indefinite mode, always show n for notifications
     const shortcuts = this.indefiniteMode
-      ? `{gray-fg}q:quit t:tasks s:stats d:dash p:pause{/gray-fg}`
-      : `{gray-fg}q:quit t:tasks s:stats d:dashboard{/gray-fg}`;
+      ? `{gray-fg}q:quit t:tasks s:stats d:dash p:pause n:msgs{/gray-fg}`
+      : `{gray-fg}q:quit t:tasks s:stats d:dash n:msgs{/gray-fg}`;
     parts.push(shortcuts);
 
     this.statusBar.setContent(parts.join(' │ '));
@@ -1259,17 +1501,76 @@ class App {
     }
   }
 
+  private async initHumanQueue(workingDir: string): Promise<void> {
+    try {
+      const { Database } = await import('bun:sqlite');
+      const dbPath = join(workingDir, '.autonoma', 'autonoma.db');
+      // Ensure directory exists
+      await mkdir(join(workingDir, '.autonoma'), { recursive: true });
+      const db = new Database(dbPath);
+      this.humanQueue = new HumanQueue(db);
+
+      // Poll for notifications every 5 seconds
+      this.notificationPollInterval = setInterval(() => {
+        if (this.humanQueue) {
+          const messages = this.humanQueue.getPending();
+          this.notificationsView.update(messages);
+          // Update status bar to show notification count
+          this.updateStatusBar();
+        }
+      }, 5000);
+    } catch {
+      // Human queue not available - silently continue
+    }
+  }
+
+  private getContextUsageMap(): Map<string, number> {
+    const agents = this.orchestrator.getAgents();
+    const contextMap = new Map<string, number>();
+    for (const agent of agents) {
+      const percent = this.orchestrator.getContextPercentage(agent.config.id);
+      contextMap.set(agent.config.id, percent);
+    }
+    return contextMap;
+  }
+
+  private toggleNotifications(): void {
+    if (this.notificationsView.visible) {
+      this.notificationsView.hide();
+      this.setView('tiles');
+    } else {
+      // Update with latest messages before showing
+      if (this.humanQueue) {
+        const messages = this.humanQueue.getPending();
+        this.notificationsView.update(messages);
+      }
+      this.hideCurrentView();
+      this.notificationsView.show();
+    }
+    this.screen.render();
+  }
+
   private quit(): void {
+    // Clean up polling interval
+    if (this.notificationPollInterval) {
+      clearInterval(this.notificationPollInterval);
+    }
+
     // Flush any remaining log entries
     if (this.logPath) {
       this.flushLog().then(() => {
         console.log(`Session log saved: ${this.logPath}`);
-      }).catch(() => {});
+      }).catch((e) => {
+        console.error('[LOG] Failed to flush log on quit:', e?.message || e);
+      });
     }
 
     this.orchestrator.killAll();
     this.screen.destroy();
-    process.exit(0);
+
+    // Exit with appropriate code based on final phase
+    const exitCode = getExitCode(this.orchestrator.currentPhase);
+    process.exit(exitCode);
   }
 }
 

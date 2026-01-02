@@ -5,6 +5,7 @@
  */
 
 export interface ParsedPlan {
+  summary?: string;
   milestones: Array<{ id: number; title: string; description: string }>;
 }
 

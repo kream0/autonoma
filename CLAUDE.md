@@ -181,4 +181,39 @@ bun run typecheck
 
 ---
 
-**Version:** 2.1 (December 17, 2025)
+---
+
+## Memory Protocol
+
+**Save memories proactively** as you work. Don't wait for session end.
+
+### When to Save
+
+- **Architectural decision**: Why you chose X over Y
+- **Gotcha or caveat**: Non-obvious behavior, edge cases
+- **Pattern discovered**: Reusable approach that worked well
+- **Error with non-obvious fix**: Save the solution
+- **Codebase insight**: Structure, conventions, relationships
+
+### How to Save
+
+```bash
+memorai save [category] "[Title]" --content "[specific insight]" --importance [1-10]
+```
+
+### Categories
+
+- `architecture` - Design patterns, system structure
+- `decisions` - Technical choices with rationale
+- `notes` - Gotchas, tips, observations
+- `structure` - File organization, naming conventions
+
+### What NOT to Save
+
+- Session summaries (use tracking files instead)
+- Obvious facts anyone could figure out
+- Temporary state or WIP notes
+
+---
+
+**Version:** 2.2 (December 31, 2025)

@@ -206,6 +206,8 @@ export class TileManager {
       mouse: true,
       keys: true,
       tags: true,
+      // Limit scrollback to prevent memory leak in indefinite mode
+      scrollback: 1000,
     });
 
     // Add existing output

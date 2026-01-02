@@ -8,6 +8,7 @@
  * - Health monitoring and crash recovery
  * - User interrupt handling
  * - Completion criteria checking
+ * - V2: Stagnation detection to prevent wasted iterations
  */
 
 import { readFile } from 'node:fs/promises';
@@ -15,6 +16,16 @@ import { join } from 'node:path';
 import type { Orchestrator } from './orchestrator.ts';
 import { HealthMonitor } from './watchdog.ts';
 import type { AgentRole, UserInterrupt } from './types.ts';
+
+/**
+ * Progress state for stagnation detection
+ */
+interface ProgressState {
+  iteration: number;
+  failingTests: Set<string>;
+  errorSignatures: Set<string>;
+  ceoFeedback: string;
+}
 
 /** Browser framework dependencies that indicate E2E testing is needed */
 const BROWSER_FRAMEWORKS = [
@@ -44,6 +55,9 @@ const DEFAULT_CONFIG: Required<IndefiniteLoopConfig> = {
   enableHealthMonitoring: true,
 };
 
+/** Number of consecutive similar iterations before declaring stagnation */
+const STAGNATION_THRESHOLD = 3;
+
 export class IndefiniteLoopController {
   private orchestrator: Orchestrator;
   private events: IndefiniteLoopEvents;
@@ -55,6 +69,9 @@ export class IndefiniteLoopController {
   private userInterrupts: UserInterrupt[] = [];
   private isBrowserProject: boolean = false;
   private requirements: string = '';  // Store requirements content for cycle calls
+
+  // V2: Stagnation detection
+  private progressHistory: ProgressState[] = [];
 
   constructor(
     orchestrator: Orchestrator,
@@ -310,6 +327,15 @@ export class IndefiniteLoopController {
         // CEO rejected - cycle will loop for retry
         console.log(`[INDEFINITE] CEO rejected: ${cycleResult.feedback || 'No feedback'}`);
 
+        // V2: Track progress for stagnation detection
+        this.recordProgress(cycleResult.feedback || '');
+
+        // Check for stagnation
+        if (this.detectStagnation()) {
+          console.log('[INDEFINITE] Stagnation detected - same errors for 3+ iterations');
+          this.handleStagnation();
+        }
+
         // Check for agents needing handoff after each cycle
         for (const agent of this.orchestrator.getAgents()) {
           if (this.orchestrator.needsHandoff(agent.config.id)) {
@@ -329,6 +355,8 @@ export class IndefiniteLoopController {
     } finally {
       this.healthMonitor.stopPeriodicChecks();
       this.orchestrator.stopGuidanceWatcher();
+      await this.orchestrator.flushStatus();
+      this.orchestrator.killAll();
       this.isRunning = false;
     }
   }
@@ -359,5 +387,108 @@ export class IndefiniteLoopController {
    */
   getUserInterrupts(): UserInterrupt[] {
     return [...this.userInterrupts];
+  }
+
+  /**
+   * V2: Record progress state for stagnation detection
+   */
+  private recordProgress(feedback: string): void {
+    // Extract error signatures from feedback
+    const errorSignatures = new Set<string>();
+    const failingTests = new Set<string>();
+
+    // Parse error patterns from feedback
+    const errorMatches = feedback.matchAll(/\[(?:CRITICAL|HIGH|MEDIUM)\]\s*([^:]+):/g);
+    for (const match of errorMatches) {
+      if (match[1]) errorSignatures.add(match[1].trim());
+    }
+
+    // Parse test failure patterns
+    const testMatches = feedback.matchAll(/(?:test|spec|it\().*(?:fail|error)/gi);
+    for (const match of testMatches) {
+      failingTests.add(match[0].toLowerCase());
+    }
+
+    this.progressHistory.push({
+      iteration: this.currentIteration,
+      failingTests,
+      errorSignatures,
+      ceoFeedback: feedback.slice(0, 500), // Truncate for comparison
+    });
+
+    // Keep only last 5 states
+    if (this.progressHistory.length > 5) {
+      this.progressHistory.shift();
+    }
+  }
+
+  /**
+   * V2: Detect if we're stuck in a loop with same errors
+   */
+  private detectStagnation(): boolean {
+    if (this.progressHistory.length < STAGNATION_THRESHOLD) {
+      return false;
+    }
+
+    const recent = this.progressHistory.slice(-STAGNATION_THRESHOLD);
+
+    // Check if error signatures are the same across recent iterations
+    const firstSignatures = [...recent[0]!.errorSignatures].sort().join(',');
+
+    for (let i = 1; i < recent.length; i++) {
+      const currentSignatures = [...recent[i]!.errorSignatures].sort().join(',');
+      if (currentSignatures !== firstSignatures) {
+        return false; // Errors are different, not stagnating
+      }
+    }
+
+    // If we got here and there are errors, we're stagnating on the same issues
+    return firstSignatures.length > 0;
+  }
+
+  /**
+   * V2: Handle stagnation by escalating or changing approach
+   */
+  private handleStagnation(): void {
+    const lastState = this.progressHistory[this.progressHistory.length - 1];
+    if (!lastState) return;
+
+    const stagnantErrors = [...lastState.errorSignatures].join(', ');
+    console.log(`[STAGNATION] Stuck on: ${stagnantErrors}`);
+
+    // Inject guidance to try a different approach
+    const guidance = `STAGNATION DETECTED: The following issues have failed to resolve for ${STAGNATION_THRESHOLD}+ iterations: ${stagnantErrors}
+
+You MUST try a DIFFERENT approach:
+1. If the same file keeps failing, consider if the architecture is wrong
+2. If tests keep failing, verify the test expectations are correct
+3. Consider if a dependency or environment issue is the root cause
+4. If stuck on types, consider simplifying the type definitions
+
+DO NOT repeat the same fixes that failed before.`;
+
+    // Queue this for CEO to process
+    this.processCeoGuidance(guidance).catch(console.error);
+
+    // Clear progress history to give the new approach a chance
+    this.progressHistory = [];
+  }
+
+  /**
+   * Get stagnation status for monitoring
+   */
+  getStagnationStatus(): {
+    isStagnating: boolean;
+    stagnantIterations: number;
+    stagnantErrors: string[];
+  } {
+    const isStagnating = this.detectStagnation();
+    const lastState = this.progressHistory[this.progressHistory.length - 1];
+
+    return {
+      isStagnating,
+      stagnantIterations: isStagnating ? STAGNATION_THRESHOLD : 0,
+      stagnantErrors: lastState ? [...lastState.errorSignatures] : [],
+    };
   }
 }

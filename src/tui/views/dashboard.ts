@@ -112,6 +112,7 @@ export class DashboardView {
     lines.push('  ↑↓←→  Navigate tiles     t  Task list');
     lines.push('  Enter Focus tile         s  Stats');
     lines.push('  ESC   Return/Close       d  Dashboard');
+    lines.push('  p     Pause (indefinite) n  Notifications');
     lines.push('  q     Quit');
 
     this.content.setContent(lines.join('\n'));

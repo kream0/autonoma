@@ -25,6 +25,8 @@ export interface RetryContext {
   humanResolution?: string;
   /** V2: Full error history for learning */
   errorTraces?: ErrorTrace[];
+  /** V2.1: Preferred developer ID for retry affinity */
+  preferredDeveloperId?: string;
 }
 
 export interface RetryContextRow {
@@ -34,6 +36,7 @@ export interface RetryContextRow {
   verification_failures: string | null; // JSON array
   human_resolution: string | null;
   error_traces: string | null; // V2: JSON array of ErrorTrace
+  preferred_developer_id: string | null; // V2.1: Developer affinity
   updated_at: string;
 }
 

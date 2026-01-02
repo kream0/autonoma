@@ -31,6 +31,7 @@ On subsequent iterations:
 Your output MUST end with a JSON block containing the plan:
 \`\`\`json
 {
+  "summary": "Brief explanation of your approach and key decisions",
   "milestones": [
     {"id": 1, "title": "...", "description": "..."},
     {"id": 2, "title": "...", "description": "..."}

@@ -10,11 +10,21 @@
  *
  * This is run after a developer claims TASK_COMPLETE via promise
  * to ensure the work actually meets quality criteria.
+ *
+ * V2 Update: Added configurable timeouts based on test type detection
+ * (E2E tests get 10min, unit tests get 3min)
  */
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+// V2: Timeout configuration
+const UNIT_TEST_TIMEOUT = 180000;  // 3 minutes
+const E2E_TEST_TIMEOUT = 600000;   // 10 minutes
+const BUILD_TIMEOUT = 120000;      // 2 minutes
+const TYPECHECK_TIMEOUT = 60000;   // 1 minute
+const LINT_TIMEOUT = 60000;        // 1 minute
 
 // ============================================
 // TYPES
@@ -63,11 +73,49 @@ export interface PipelineConfig {
 // ============================================
 
 /**
+ * V2: Detect if project has E2E tests
+ */
+function detectE2ETests(workingDir: string): boolean {
+  const pkgPath = join(workingDir, 'package.json');
+
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const scripts = pkg.scripts || {};
+
+    // Check for E2E frameworks
+    const e2eFrameworks = ['playwright', '@playwright/test', 'cypress', 'puppeteer', 'selenium-webdriver', 'webdriverio'];
+    for (const framework of e2eFrameworks) {
+      if (framework in allDeps) return true;
+    }
+
+    // Check for e2e script
+    if (scripts['test:e2e'] || scripts['e2e'] || scripts['test:playwright'] || scripts['test:cypress']) {
+      return true;
+    }
+
+    // Check for e2e directory
+    if (existsSync(join(workingDir, 'e2e')) || existsSync(join(workingDir, 'tests/e2e'))) {
+      return true;
+    }
+  } catch {
+    // Ignore errors
+  }
+
+  return false;
+}
+
+/**
  * Create default pipeline stages based on project type
+ * V2: Uses dynamic timeouts based on E2E detection
  */
 export function createDefaultStages(workingDir: string): PipelineStage[] {
   const stages: PipelineStage[] = [];
   const pkgPath = join(workingDir, 'package.json');
+
+  // V2: Detect E2E tests for timeout configuration
+  const hasE2E = detectE2ETests(workingDir);
+  const testTimeout = hasE2E ? E2E_TEST_TIMEOUT : UNIT_TEST_TIMEOUT;
 
   // Check what's available in package.json
   let pkg: Record<string, unknown> = {};
@@ -95,7 +143,7 @@ export function createDefaultStages(workingDir: string): PipelineStage[] {
       type: 'build',
       command: `${pmRun} build`,
       required: false,  // Build is nice-to-have, not blocking
-      timeout: 120000,
+      timeout: BUILD_TIMEOUT,
       failurePattern: /error|failed|Error:/i,
     });
   }
@@ -113,7 +161,7 @@ export function createDefaultStages(workingDir: string): PipelineStage[] {
       type: 'typecheck',
       command: typecheckCmd,
       required: true,  // Type errors are blocking
-      timeout: 60000,
+      timeout: TYPECHECK_TIMEOUT,
       failurePattern: /error TS\d+:/,
     });
   }
@@ -131,19 +179,19 @@ export function createDefaultStages(workingDir: string): PipelineStage[] {
       type: 'lint',
       command: lintCmd,
       required: false,  // Lint warnings shouldn't block
-      timeout: 60000,
+      timeout: LINT_TIMEOUT,
       failurePattern: /error/i,
     });
   }
 
-  // 4. Test stage
+  // 4. Test stage - V2: Dynamic timeout based on E2E detection
   if (scripts.test) {
     stages.push({
-      name: 'Test',
+      name: hasE2E ? 'Test (E2E)' : 'Test',
       type: 'test',
       command: `${pmRun} test`,
       required: true,  // Tests must pass
-      timeout: 180000,
+      timeout: testTimeout,  // V2: Dynamic based on E2E detection
       successPattern: /passed|success|\d+ passing/i,
       failurePattern: /failed|\d+ failing|error/i,
     });

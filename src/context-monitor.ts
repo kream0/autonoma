@@ -15,8 +15,8 @@ import type {
 /** Default context limit for Claude Opus (200k tokens) */
 const DEFAULT_CONTEXT_LIMIT = 200_000;
 
-/** Thresholds and their corresponding actions */
-const THRESHOLDS: ContextThreshold[] = [40, 50, 60, 70, 80];
+/** Thresholds and their corresponding actions (75% triggers handoff for better buffer) */
+const THRESHOLDS: ContextThreshold[] = [40, 50, 60, 70, 75];
 
 /** Context awareness messages for each threshold level */
 const CONTEXT_MESSAGES: Record<ContextThreshold, string> = {
@@ -43,8 +43,8 @@ Do not begin new complex operations. Document any work-in-progress.
 After completing immediate work, await further instructions.
 </context_status>`,
 
-  80: `<context_status level="80" action="handoff">
-Context usage: 80%. STOP current work and prepare handoff.
+  75: `<context_status level="75" action="handoff">
+Context usage: 75%. STOP current work and prepare handoff.
 
 Output a <handoff> block with the following structure:
 
@@ -132,8 +132,8 @@ export class ContextMonitor {
           const message = CONTEXT_MESSAGES[threshold];
           this.events.onThresholdReached(state.agentId, threshold, message);
 
-          // At 80%, also trigger handoff requirement
-          if (threshold === 80 && !state.handoffRequested) {
+          // At 75%, also trigger handoff requirement (lowered from 80% for better buffer)
+          if (threshold === 75 && !state.handoffRequested) {
             state.handoffRequested = true;
             this.events.onHandoffRequired(state.agentId);
           }

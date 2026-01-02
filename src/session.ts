@@ -98,13 +98,26 @@ export class ClaudeSession {
     return this._tokenUsage;
   }
 
+  /** Maximum output lines to keep in memory to prevent OOM */
+  private static readonly MAX_OUTPUT_LINES = 1000;
+  /** Lines to trim when buffer exceeds limit */
+  private static readonly TRIM_LINES = 200;
+
   private setStatus(status: AgentStatus) {
     this._status = status;
     this.events.onStatusChange(status);
   }
 
+  /**
+   * Add output line with buffer limit to prevent memory leaks.
+   * Trims oldest lines when buffer exceeds MAX_OUTPUT_LINES.
+   */
   private addOutput(line: string) {
     this._output.push(line);
+    // Prevent unbounded memory growth in long-running sessions
+    if (this._output.length > ClaudeSession.MAX_OUTPUT_LINES) {
+      this._output.splice(0, ClaudeSession.TRIM_LINES);
+    }
     this.events.onOutput(line);
   }
 

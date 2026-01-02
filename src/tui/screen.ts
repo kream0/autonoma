@@ -14,6 +14,7 @@ export interface ScreenEvents {
   onFocus: () => void;
   onUnfocus: () => void;
   onPause?: () => void;  // For indefinite mode
+  onNotifications?: () => void;  // Toggle notifications view
 }
 
 export class Screen {
@@ -105,6 +106,13 @@ export class Screen {
     this.screen.key(['p'], () => {
       if (!this.isFocused && this.events.onPause) {
         this.events.onPause();
+      }
+    });
+
+    // Notifications (human queue messages)
+    this.screen.key(['n'], () => {
+      if (!this.isFocused && this.events.onNotifications) {
+        this.events.onNotifications();
       }
     });
   }

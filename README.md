@@ -200,6 +200,31 @@ State includes:
 - Current progress and developer count
 - Completed phases
 
+## Memorai Integration
+
+Autonoma integrates with [Memorai](https://github.com/yourusername/memorai) for persistent knowledge management:
+
+**For Agents:**
+- Developers search relevant memories before starting tasks
+- Learnings are automatically stored after successful task completion
+- CEO receives architecture/decision memories during planning
+
+**For Development:**
+- `.memorai/` stores project knowledge in SQLite
+- Claude Code hooks auto-inject context at session start
+- Memories include: architecture patterns, gotchas, past bug fixes
+
+```bash
+# Check memory status
+npx memorai status
+
+# Search memories
+npx memorai find "retry system"
+
+# View recent memories
+npx memorai recent 10
+```
+
 ## Complexity-Aware Allocation
 
 The Staff Engineer analyzes task complexity to prevent context overflow:

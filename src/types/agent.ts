@@ -39,8 +39,8 @@ export interface AgentState {
   tokenUsage: TokenUsage;
 }
 
-/** Context threshold levels for awareness injection */
-export type ContextThreshold = 40 | 50 | 60 | 70 | 80;
+/** Context threshold levels for awareness injection (75% triggers handoff for better buffer) */
+export type ContextThreshold = 40 | 50 | 60 | 70 | 75;
 
 /** Watchdog decision types */
 export type WatchdogDecision = 'respawn' | 'inject_guidance' | 'continue' | 'escalate_to_user';

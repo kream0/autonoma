@@ -12,6 +12,8 @@ export class StatsView {
   private container: blessed.Widgets.BoxElement;
   private content: blessed.Widgets.BoxElement;
   private startTime: Date | null = null;
+  private taskCompletionTimes: Date[] = [];
+  private lastCompletedCount = 0;
 
   constructor(screen: blessed.Widgets.Screen) {
     this.screen = screen;
@@ -53,17 +55,85 @@ export class StatsView {
   }
 
   /**
-   * Update stats display
+   * Calculate completion rate (tasks per minute) over last N completions
+   * Uses sliding window of recent completions for accuracy
    */
-  update(agents: AgentState[], tasks: Task[]): void {
+  private calculateCompletionRate(): number {
+    const windowSize = 5; // Use last 5 completions
+    if (this.taskCompletionTimes.length < 2) return 0;
+
+    const times = this.taskCompletionTimes.slice(-windowSize);
+    if (times.length < 2) return 0;
+
+    const firstTime = times[0]!.getTime();
+    const lastTime = times[times.length - 1]!.getTime();
+    const durationMinutes = (lastTime - firstTime) / 60000;
+
+    if (durationMinutes <= 0) return 0;
+    return (times.length - 1) / durationMinutes;
+  }
+
+  /**
+   * Format duration as human-readable string
+   */
+  private formatDuration(seconds: number): string {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) {
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      return `${mins}m ${secs}s`;
+    }
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.round((seconds % 3600) / 60);
+    return `${hours}h ${mins}m`;
+  }
+
+  /**
+   * Update stats display
+   * @param contextUsage Optional map of agentId -> context percentage (0-100)
+   */
+  update(agents: AgentState[], tasks: Task[], contextUsage?: Map<string, number>): void {
     const lines: string[] = [];
 
-    // Duration
+    // Task stats (moved up for ETA calculation)
+    const taskStats = {
+      total: tasks.length,
+      pending: tasks.filter(t => t.status === 'pending').length,
+      running: tasks.filter(t => t.status === 'running').length,
+      complete: tasks.filter(t => t.status === 'complete').length,
+      failed: tasks.filter(t => t.status === 'failed').length,
+    };
+
+    // Track new task completions for rate calculation
+    if (taskStats.complete > this.lastCompletedCount) {
+      const newCompletions = taskStats.complete - this.lastCompletedCount;
+      for (let i = 0; i < newCompletions; i++) {
+        this.taskCompletionTimes.push(new Date());
+      }
+      // Keep only last 20 completions to bound memory
+      if (this.taskCompletionTimes.length > 20) {
+        this.taskCompletionTimes = this.taskCompletionTimes.slice(-20);
+      }
+      this.lastCompletedCount = taskStats.complete;
+    }
+
+    // Duration and ETA
     if (this.startTime) {
       const duration = Math.floor((Date.now() - this.startTime.getTime()) / 1000);
-      const minutes = Math.floor(duration / 60);
-      const seconds = duration % 60;
-      lines.push(`{bold}Session Duration:{/bold} ${minutes}m ${seconds}s`);
+      lines.push(`{bold}Session Duration:{/bold} ${this.formatDuration(duration)}`);
+
+      // Calculate and show ETA if we have completion data
+      const rate = this.calculateCompletionRate();
+      const remaining = taskStats.pending + taskStats.running;
+      if (rate > 0 && remaining > 0) {
+        const etaMinutes = remaining / rate;
+        const etaSeconds = etaMinutes * 60;
+        lines.push(`{bold}Est. Remaining:{/bold} ${this.formatDuration(etaSeconds)} ({cyan-fg}${rate.toFixed(1)} tasks/min{/cyan-fg})`);
+      } else if (remaining > 0 && taskStats.complete === 0) {
+        lines.push(`{bold}Est. Remaining:{/bold} {gray-fg}calculating...{/gray-fg}`);
+      } else if (remaining === 0 && taskStats.complete > 0) {
+        lines.push(`{bold}Status:{/bold} {green-fg}All tasks complete{/green-fg}`);
+      }
       lines.push('');
     }
 
@@ -88,17 +158,16 @@ export class StatsView {
       if (tokens > 0) {
         lines.push(`    Tokens: ${tokens.toLocaleString()} (in: ${agent.tokenUsage.inputTokens.toLocaleString()}, out: ${agent.tokenUsage.outputTokens.toLocaleString()})`);
       }
+      // Show context usage if available
+      if (contextUsage) {
+        const percent = contextUsage.get(agent.config.id) ?? 0;
+        if (percent > 0) {
+          const contextColor = percent >= 80 ? 'red' : percent >= 60 ? 'yellow' : 'green';
+          lines.push(`    {${contextColor}-fg}Context: ${percent}%{/${contextColor}-fg}`);
+        }
+      }
       lines.push('');
     }
-
-    // Task stats
-    const taskStats = {
-      total: tasks.length,
-      pending: tasks.filter(t => t.status === 'pending').length,
-      running: tasks.filter(t => t.status === 'running').length,
-      complete: tasks.filter(t => t.status === 'complete').length,
-      failed: tasks.filter(t => t.status === 'failed').length,
-    };
 
     lines.push('{bold}Tasks:{/bold}');
     lines.push('');

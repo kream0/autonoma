@@ -1,7 +1,409 @@
 # Completed Tasks Archive
 
 **Purpose:** Historical record of completed development tasks
-**Last Updated:** December 31, 2025 (Session 45)
+**Last Updated:** January 2, 2026 (Session 59)
+
+---
+
+## SESSION 59 - BUG FIXES (January 2, 2026)
+
+**Focus:** Process cleanup & state persistence bugs
+**Status:** COMPLETE
+
+### Bugs Fixed:
+
+| Bug | Root Cause | Fix Location |
+|-----|------------|--------------|
+| Processes not killed on exit | `killAll()` missing from normal exit | `index.ts`, `indefinite.ts` |
+| Batch tasks stuck as "pending" | TaskQueue spread copied tasks | `queue.ts:36-43` |
+| status.json stale on completion | Debounce timer not flushed | `orchestrator.ts:335-371` |
+
+### Files Modified:
+- `src/queue.ts` - Use original task refs instead of copies
+- `src/orchestrator.ts` - Added `flushStatus()` method
+- `src/index.ts` - Added cleanup before all exits
+- `src/indefinite.ts` - Added cleanup in finally block
+
+---
+
+## SESSION 58 - USER TESTING VALIDATION (January 2, 2026)
+
+**Focus:** Full orchestration testing to validate all Sprint improvements
+**Status:** COMPLETE
+
+### Test Results:
+
+| Metric | Value |
+|--------|-------|
+| Test Project | bookmark-cli (mid-complexity) |
+| Exit Code | 0 (Success) |
+| Tasks | 11/11 completed |
+| Batches | 5/5 completed |
+| Runtime | ~20 minutes |
+| Typecheck | All passed |
+
+### Features Validated:
+
+1. **Planning Phase**
+   - CEO decision summaries displayed correctly
+   - 5 milestones created from spec
+
+2. **Task Breakdown**
+   - Staff complexity analysis working
+   - Recommended 3 developers, dynamic spawning to 2→4
+
+3. **Development Phase**
+   - Work-stealing queue functioning
+   - Parallel developer execution
+   - Verification pipeline (typecheck) after each task
+
+4. **Output & Logging**
+   - Session logs created in `.autonoma/logs/`
+   - Status file updated correctly
+   - Memorai learnings stored
+
+### Files Created (by Autonoma):
+| File | Purpose |
+|------|---------|
+| `testprojects/bookmark-cli/src/index.ts` | CLI entry point |
+| `testprojects/bookmark-cli/src/db.ts` | SQLite database module |
+| `testprojects/bookmark-cli/src/commands/*.ts` | 6 command handlers |
+| `testprojects/bookmark-cli/src/utils/fetch-title.ts` | URL title extraction |
+
+### Verification:
+- All CLI commands work (add, list, search, delete, tags, export)
+- Auto-fetched title from example.com successfully
+- Pretty table output with chalk colors
+
+---
+
+## SESSION 55 - SPRINT 2 HIGH PRIORITY (January 1, 2026)
+
+**Focus:** High priority improvements from reliability analysis
+**Status:** COMPLETE
+
+### Implemented:
+
+1. **Debounce Status Writes** - `orchestrator.ts:284-325`
+   - Added 100ms debounce timer to coalesce rapid status changes
+   - Reduces I/O during high-frequency agent status updates
+
+2. **Decision Summaries** - `parsers.ts`, `prompts.ts`, `planning.ts`
+   - Added `summary` field to ParsedPlan interface
+   - Updated CEO prompt to request summary
+   - Displays `[CEO] Decision: ...` in output
+
+3. **Top Failure Extraction** - `verification/index.ts:162-233`
+   - Added `extractFileReferences()` for TS/Jest/ESLint patterns
+   - Added `extractTopFailures()` to get top 3 actionable errors
+   - Used in development.ts for verification failures
+
+4. **Retry Indicators** - `development.ts`
+   - Consistent `[RETRY X/Y]` format throughout
+   - Shows attempt number and max retries
+
+5. **Atomic Handoff** - `orchestrator.ts:640-704`
+   - Creates replacement agent BEFORE killing old one
+   - Rolls back on failure (kills new agent, keeps old)
+   - Prevents orphaned state on handoff errors
+
+### Files Modified:
+| File | Changes |
+|------|---------|
+| `src/orchestrator.ts` | Status debounce timer, atomic handoff |
+| `src/phases/parsers.ts` | ParsedPlan.summary field |
+| `src/phases/prompts.ts` | CEO output format |
+| `src/phases/planning.ts` | Display decision summary |
+| `src/phases/development.ts` | extractTopFailures import, retry indicators |
+| `src/verification/index.ts` | File reference extraction functions |
+
+---
+
+## SESSION 54 - SPRINT 1 CRITICAL FIXES (January 1, 2026)
+
+**Focus:** Critical fixes for production readiness
+**Status:** COMPLETE
+
+### Implemented:
+- OOM prevention with MAX_OUTPUT_LINES cap
+- TUI scrollback limits
+- Context threshold lowered to 75%
+- Error logging in 6 silent catch blocks
+- Atomic conflict detection with mutex
+- CI/CD exit codes (0/1/2/3)
+
+---
+
+## SESSION 52 - TUI MODE PARITY (January 1, 2026)
+
+**Focus:** Bring TUI mode up to date with recent features from last 3 commits
+**Status:** COMPLETE
+
+### Major Accomplishments:
+
+1. **Dynamic Developer Tiles**
+   - Added `onAgentsChanged` event to `OrchestratorEvents`
+   - Emitted from `spawnDevelopersForBatch()` when developers spawn
+   - TUI App class listens and refreshes tiles automatically
+
+2. **NotificationsView Wired Up**
+   - Added 'n' key binding in `screen.ts`
+   - Created `toggleNotifications()` method in App class
+   - HumanQueue polling every 5 seconds
+   - Notification count shown in status bar
+
+3. **Iteration Count in Status Bar**
+   - Added `currentIteration` tracking in App class
+   - Updated from `onLoopIteration` callback
+   - Shows `[INDEFINITE #N]` in status bar
+
+4. **Context Usage in StatsView**
+   - Added `contextUsage` parameter to `statsView.update()`
+   - Shows percentage per agent with color coding
+   - Green (<60%), Yellow (60-80%), Red (≥80%)
+
+5. **Documentation Updates**
+   - Dashboard shortcuts: Added 'p' and 'n' keys
+   - Help text: Added 'n' for notifications
+
+### Files Modified:
+| File | Changes |
+|------|---------|
+| `src/orchestrator.ts` | Added `onAgentsChanged` event |
+| `src/tui/screen.ts` | Added `onNotifications` callback, 'n' key |
+| `src/tui/views/stats.ts` | Context usage display with colors |
+| `src/tui/views/dashboard.ts` | Updated keyboard shortcuts |
+| `src/index.ts` | NotificationsView wiring, iteration tracking, context helper |
+
+### Deferred:
+- Verification status display (requires pipeline changes to store results)
+
+### Verification:
+- `bun run typecheck` passes
+
+---
+
+## SESSION 51 - 12 QUALITY IMPROVEMENTS (January 1, 2026)
+
+**Focus:** Implement all 12 quality improvements from Session 50 plan
+**Status:** COMPLETE
+
+### Major Accomplishments:
+
+1. **Phase 1: Foundation (P0)**
+   - Created `src/utils/mutex.ts` - Async mutex with `withLock()` helper
+   - Updated `src/queue.ts` - All mutating methods protected by mutex
+   - Updated `src/session.ts` - Output buffer limited to 1000 lines
+
+2. **Phase 2: Self-Healing (P1)**
+   - Auto-resolve patterns for common blockers (npm install, port conflicts, etc.)
+   - 30-minute escalation timeout for unresolved blockers
+   - CEO feedback requires what/why/where/how structure
+   - Stagnation detection after 3 iterations with same errors
+   - Fallback handoff from git diff on agent crash
+
+3. **Phase 3: Accuracy (P1)**
+   - FileConflictDetector prevents parallel developers from overwriting same files
+   - Developer affinity tracks preferredDeveloperId for retry routing
+   - Dynamic memory search filters by relevance >= 0.5, takes top 10
+
+4. **Phase 4: Maintenance (P2)**
+   - Complete phase reset clears lastTestOutput, lastQaOutput, currentTasksInProgress
+   - Configurable verification timeouts: E2E=10min, unit=3min (auto-detected)
+
+### Files Created:
+| File | Purpose |
+|------|---------|
+| `src/utils/mutex.ts` | Async mutex utility |
+
+### Files Modified:
+| File | Changes |
+|------|---------|
+| `src/queue.ts` | Mutex protection |
+| `src/session.ts` | Output buffer limits |
+| `src/human-queue/index.ts` | Auto-escalation |
+| `src/human-queue/store.ts` | getAll() method |
+| `src/phases/ceo-approval.ts` | Structured feedback |
+| `src/indefinite.ts` | Stagnation detection |
+| `src/handoff.ts` | Fallback handoff |
+| `src/phases/development.ts` | Conflict detection, memory search |
+| `src/retry/index.ts` | Developer affinity |
+| `src/retry/types.ts` | preferredDeveloperId field |
+| `src/orchestrator.ts` | Complete phase reset |
+| `src/verification/pipeline.ts` | Configurable timeouts |
+
+### Verification:
+- `bun run typecheck` passes
+- All changes backwards compatible
+
+---
+
+## SESSION 48 - DYNAMIC DEVELOPER SPAWNING (December 31, 2025)
+
+**Focus:** Remove 6-developer limit, implement dynamic spawning per batch
+**Status:** COMPLETE
+
+### Major Accomplishments:
+
+1. **Removed Hardcoded Developer Limits**
+   - Deleted `DEFAULT_MAX_DEVELOPERS = 6` constant
+   - Removed `maxDevelopers` class field
+   - Removed `setMaxDevelopers()` method
+   - Removed `--max-developers` CLI flag
+
+2. **Implemented Dynamic Developer Spawning**
+   - New `spawnDevelopersForBatch(count)` method creates developers on-demand
+   - New `cleanupDevelopers()` method removes developers between batches
+   - `initializeHierarchy()` now only creates CEO, Staff Engineer, QA
+   - Developers spawned per batch: if 15 tasks → 15 developers
+
+3. **Updated Development Phase**
+   - Calculates `developersNeeded` per batch based on task count
+   - Respects `maxParallelTasks` if specified for complexity control
+   - Logs warning at 20+ developers (no hard cap)
+   - Work-stealing still works within each batch
+
+4. **Code Cleanup**
+   - Updated `PhaseContext` interface
+   - Updated task-breakdown.ts prompt for dynamic parallelism
+   - Made `maxDevelopers` optional in state schema (deprecated)
+   - Bumped `STATE_VERSION` to 4
+
+### Files Modified:
+| File | Changes |
+|------|---------|
+| `src/orchestrator.ts` | Removed limits, added spawn/cleanup methods |
+| `src/phases/development.ts` | Dynamic spawning per batch |
+| `src/phases/task-breakdown.ts` | Removed setMaxDevelopers param |
+| `src/phases/types.ts` | Updated PhaseContext interface |
+| `src/types/state.ts` | Made maxDevelopers optional |
+| `src/index.ts` | Removed --max-developers flag |
+
+### Verification:
+- `bun run typecheck` passes
+- Backwards compatible with old state files
+
+---
+
+## SESSION 47 - INTEGRATION TESTING & SKILLS CLEANUP (December 31, 2025)
+
+**Focus:** Integration test Autonoma v2 and remove framework-specific skills
+**Status:** COMPLETE
+
+### Major Accomplishments:
+
+1. **Removed Hardcoded Developer Skills**
+   - Deleted `.claude/skills/frontend-dev/`, `.claude/skills/backend-dev/`, `.claude/skills/testing/`
+   - Reason: Constrained Autonoma to TypeScript/React, wouldn't work for Python/Go/Rust projects
+   - Solution: Let Claude naturally adapt to any codebase
+
+2. **Integration Tested Autonoma v2 on realproject**
+   - Full pipeline execution verified:
+     - Planning Phase: CEO analyzed existing codebase, created 6 milestones (~9 min)
+     - Task Breakdown: Staff Engineer created 32 tasks in 20 batches (~6 min)
+     - Development Phase: Developer started implementing
+   - Promise detection working correctly
+   - Phase transitions triggered on promise detection
+
+3. **Verified Codebase Continuation**
+   - Autonoma correctly continued existing project (tactical shooter game)
+   - Did NOT restart from scratch
+   - Recognized existing: movement, combat, health/armor, economy, round state machine
+   - Identified integration work needed vs. new features
+
+### Files Deleted:
+| File | Reason |
+|------|--------|
+| `.claude/skills/frontend-dev/SKILL.md` | Framework-specific constraint |
+| `.claude/skills/backend-dev/SKILL.md` | Framework-specific constraint |
+| `.claude/skills/testing/SKILL.md` | Framework-specific constraint |
+
+### Verification:
+- Full pipeline test passed
+- Promise detection verified
+- Phase transitions verified
+- Typecheck passes
+
+---
+
+## SESSION 46 - AUTONOMA V2: AUTONOMOUS DEVELOPMENT SYSTEM (December 31, 2025)
+
+**Focus:** Implement 100% autonomous continuous development based on ralph-wiggum and Claude Code best practices
+**Status:** COMPLETE (Structural - Needs Testing)
+
+### Major Accomplishments:
+
+1. **Ralph-Style Self-Loop System**
+   - Created stop hook that checks for `<promise>TASK_COMPLETE</promise>`
+   - Agents loop internally without orchestrator intervention
+   - Max iterations safety (default 10)
+
+2. **Completion Promise Protocol**
+   - Added 8 promise types: TASK_COMPLETE, PLAN_COMPLETE, TASKS_READY, etc.
+   - Parser with `parseCompletionPromise()`, `hasCompletionPromise()`
+   - Updated all agent prompts with `<self_loop_protocol>` sections
+
+3. **KV-Cache Optimized Prompts**
+   - PromptBuilder class with static/semi-static/dynamic/recitation sections
+   - Recitation generator for objective reminder at END of prompts
+
+4. **Claude Code Hooks**
+   - Stop hook: Loop controller with promise detection
+   - Post-edit hook: Auto-verification after file changes
+   - Pre-bash hook: Dangerous command blocking
+
+5. **Multi-Stage Verification Pipeline**
+   - Build, typecheck, lint, test stages
+   - Auto-detects project type and available scripts
+   - Runs after developer claims TASK_COMPLETE
+
+6. **Developer Skills**
+   - frontend-dev: React/TypeScript patterns
+   - backend-dev: API/database patterns
+   - testing: Test writing patterns
+
+7. **Enhanced Error Handling**
+   - ErrorTrace type with history preservation
+   - Retry prompts include error history for learning
+   - "Learn from previous failures" instruction
+
+8. **State Schema v4**
+   - Added loopStates, promiseRecords, verificationHistory
+   - Added sessionIds for resume support
+
+9. **File-Based Observation Store**
+   - Large observations saved to disk
+   - Only summary + filepath in context
+
+### Files Created:
+| File | Purpose |
+|------|---------|
+| `.claude/hooks/hooks.json` | Hook configuration |
+| `.claude/hooks/stop-hook.ts` | Self-loop controller |
+| `.claude/hooks/post-edit.ts` | Post-edit verification |
+| `.claude/hooks/pre-bash.ts` | Command validation |
+| `src/phases/prompt-builder.ts` | KV-cache optimized prompts |
+| `src/phases/recitation.ts` | Objective recitation |
+| `src/verification/pipeline.ts` | Multi-stage verification |
+| `src/observation-store.ts` | File-based storage |
+| `.claude/skills/*/SKILL.md` | 3 developer Skills |
+
+### Files Modified:
+| File | Changes |
+|------|---------|
+| `src/types/protocol.ts` | CompletionPromise types |
+| `src/protocol/parser.ts` | Promise parsing |
+| `src/phases/prompts.ts` | Self-loop protocol |
+| `src/session.ts` | Hook integration, sessionId |
+| `src/phases/development.ts` | Recitation, varied instructions |
+| `src/retry/*` | Error trace history |
+| `src/types/state.ts` | V4 schema |
+| `src/handoff.ts` | SessionId support |
+
+### Verification:
+- `bun run typecheck` passes
+- Structural changes complete
+- Integration testing needed
 
 ---
 

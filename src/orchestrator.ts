@@ -5,7 +5,7 @@
  * Supports state persistence, resume capability, and parallel developer execution.
  */
 
-import { readFile, writeFile, mkdir, access, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, unlink, watch } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ClaudeSession } from './session.ts';
 import { ContextMonitor } from './context-monitor.ts';
@@ -52,6 +52,9 @@ import {
 /** Current state file version */
 const STATE_VERSION = 4;
 
+/** Maximum output lines per agent to prevent OOM in indefinite mode */
+const MAX_OUTPUT_LINES = 1000;
+
 /** Common project documentation files */
 const PROJECT_DOC_FILES = ['PRD.md', 'TODO.md', 'LAST_SESSION.md', 'BACKLOG.md', 'COMPLETED_TASKS.md'];
 
@@ -62,6 +65,7 @@ export interface OrchestratorEvents {
   onPhaseChange?: (phase: string) => void;
   onContextThreshold?: (agentId: string, threshold: ContextThreshold, percent: number) => void;
   onHandoffRequired?: (agentId: string) => void;
+  onAgentsChanged?: () => void;  // Called when agents are spawned/cleaned up (for TUI tile refresh)
 }
 
 export class Orchestrator {
@@ -78,8 +82,9 @@ export class Orchestrator {
   private statePath: string;
   private statusPath: string;
   private guidancePath: string;
-  private guidanceWatcherInterval?: ReturnType<typeof setInterval>;
+  private guidanceWatcherAbort?: AbortController;
   private statusWritePending: boolean = false;
+  private statusWriteTimer: ReturnType<typeof setTimeout> | null = null;
   private persistedState: PersistedState | null = null;
   private requirementsContent: string | null = null;
 
@@ -99,6 +104,11 @@ export class Orchestrator {
   private humanQueue: HumanQueue | null = null;
   private retryContextStore: RetryContextStore | null = null;
   private verificationConfig: VerificationConfig | null = null;
+
+  // Session logging
+  private sessionLogPath: string | null = null;
+  private sessionLogBuffer: string[] = [];
+  private sessionLogFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(workingDir: string, events: OrchestratorEvents) {
     this.workingDir = workingDir;
@@ -165,6 +175,9 @@ export class Orchestrator {
    */
   private async initDirs(): Promise<void> {
     await mkdir(this.logDir, { recursive: true });
+
+    // Initialize session log for this run
+    await this.initSessionLog();
 
     if (!this.db) {
       this.db = await createDatabase(this.workingDir);
@@ -274,12 +287,61 @@ export class Orchestrator {
 
   /**
    * Write status.json for external monitoring (Claude Code Control API)
-   * Non-blocking write with lock to prevent concurrent writes
+   * Debounced (100ms) to coalesce rapid status changes and reduce I/O
    */
   private writeStatus(): void {
-    // Skip if a write is already in progress
-    if (this.statusWritePending) return;
-    this.statusWritePending = true;
+    // Clear any pending debounce timer
+    if (this.statusWriteTimer) {
+      clearTimeout(this.statusWriteTimer);
+      this.statusWriteTimer = null;
+    }
+
+    // Debounce: wait 100ms before writing to coalesce rapid changes
+    this.statusWriteTimer = setTimeout(() => {
+      this.statusWriteTimer = null;
+
+      // Skip if a write is already in progress
+      if (this.statusWritePending) return;
+      this.statusWritePending = true;
+
+      const agents: Record<string, AgentStatus> = {};
+      let devIndex = 1;
+      for (const [, agent] of this.agents) {
+        const role = agent.state.config.role;
+        const key = role === 'developer' ? `developer-${devIndex++}` : role;
+        agents[key] = agent.state.status;
+      }
+
+      const tasks = this.getAllBatchTasks();
+      const status: StatusFile = {
+        phase: this.currentPhase,
+        iteration: this.persistedState?.totalLoopIterations || 1,
+        progress: {
+          completed: tasks.filter(t => t.status === 'complete').length,
+          total: tasks.length,
+        },
+        agents,
+        lastUpdate: new Date().toISOString(),
+      };
+
+      writeFile(this.statusPath, JSON.stringify(status, null, 2), 'utf-8')
+        .finally(() => { this.statusWritePending = false; })
+        .catch((e) => {
+          console.error('[STATUS] Failed to write status.json:', e?.message || e);
+        });
+    }, 100);
+  }
+
+  /**
+   * Flush status.json immediately (bypasses debounce).
+   * Call this before process exit to ensure final state is persisted.
+   */
+  async flushStatus(): Promise<void> {
+    // Cancel any pending debounced write
+    if (this.statusWriteTimer) {
+      clearTimeout(this.statusWriteTimer);
+      this.statusWriteTimer = null;
+    }
 
     const agents: Record<string, AgentStatus> = {};
     let devIndex = 1;
@@ -301,38 +363,69 @@ export class Orchestrator {
       lastUpdate: new Date().toISOString(),
     };
 
-    writeFile(this.statusPath, JSON.stringify(status, null, 2), 'utf-8')
-      .finally(() => { this.statusWritePending = false; })
-      .catch(() => {});
+    try {
+      await writeFile(this.statusPath, JSON.stringify(status, null, 2), 'utf-8');
+    } catch (e) {
+      console.error('[STATUS] Failed to flush status.json:', (e as Error)?.message || e);
+    }
   }
 
   /**
-   * Start polling for guidance file (Claude Code Control API)
-   * Polls every 5 seconds for .autonoma/guidance.txt
+   * Start watching for guidance file (Claude Code Control API)
+   * Uses fs.watch for instant notification instead of polling
    */
   startGuidanceWatcher(onGuidance: (guidance: string) => Promise<void>): void {
     this.stopGuidanceWatcher();
-    this.guidanceWatcherInterval = setInterval(async () => {
+    this.guidanceWatcherAbort = new AbortController();
+    const { signal } = this.guidanceWatcherAbort;
+
+    // Watch the .autonoma directory for changes to guidance.txt
+    const watchDir = this.stateDir;
+    const guidanceFileName = 'guidance.txt';
+
+    // Start async watcher
+    (async () => {
       try {
-        const content = await readFile(this.guidancePath, 'utf-8');
-        const guidance = content.trim();
-        if (guidance.length > 0) {
-          await unlink(this.guidancePath).catch(() => {});
-          await onGuidance(guidance);
+        // Ensure directory exists before watching
+        await mkdir(watchDir, { recursive: true });
+
+        const watcher = watch(watchDir, { signal });
+        for await (const event of watcher) {
+          if (event.filename === guidanceFileName) {
+            // File was created or modified - read and process
+            try {
+              const content = await readFile(this.guidancePath, 'utf-8');
+              const guidance = content.trim();
+              if (guidance.length > 0) {
+                await unlink(this.guidancePath).catch((e) => {
+                  console.error('[GUIDANCE] Failed to delete guidance file:', e?.message || e);
+                });
+                await onGuidance(guidance);
+              }
+            } catch (e: unknown) {
+              const err = e as NodeJS.ErrnoException;
+              if (err?.code !== 'ENOENT') {
+                console.error('[GUIDANCE] Failed to read guidance file:', err?.message || e);
+              }
+            }
+          }
         }
-      } catch {
-        // File doesn't exist or read error - ignore
+      } catch (e: unknown) {
+        // AbortError is expected when stopping the watcher
+        if ((e as Error).name !== 'AbortError') {
+          console.error('[GUIDANCE] Watcher error:', (e as Error)?.message || e);
+        }
       }
-    }, 5000);
+    })();
   }
 
   /**
    * Stop the guidance file watcher
    */
   stopGuidanceWatcher(): void {
-    if (this.guidanceWatcherInterval) {
-      clearInterval(this.guidanceWatcherInterval);
-      this.guidanceWatcherInterval = undefined;
+    if (this.guidanceWatcherAbort) {
+      this.guidanceWatcherAbort.abort();
+      this.guidanceWatcherAbort = undefined;
     }
   }
 
@@ -404,6 +497,93 @@ export class Orchestrator {
   }
 
   /**
+   * Initialize session log file with timestamp
+   * Creates a new session log for historical analysis
+   */
+  private async initSessionLog(): Promise<void> {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    this.sessionLogPath = join(this.logDir, `session-${timestamp}.log`);
+
+    const header = [
+      '='.repeat(60),
+      `Autonoma Session Log`,
+      `Started: ${new Date().toISOString()}`,
+      `Working Dir: ${this.workingDir}`,
+      '='.repeat(60),
+      '',
+    ].join('\n');
+
+    await writeFile(this.sessionLogPath, header, 'utf-8');
+  }
+
+  /**
+   * Append to session log (buffered for performance)
+   */
+  private appendToSessionLog(agentId: string, line: string): void {
+    if (!this.sessionLogPath) return;
+
+    const timestamp = new Date().toISOString();
+    const logLine = `[${timestamp}] [${agentId}] ${line}`;
+    this.sessionLogBuffer.push(logLine);
+
+    // Debounce flush to reduce I/O
+    if (!this.sessionLogFlushTimer) {
+      this.sessionLogFlushTimer = setTimeout(() => {
+        this.flushSessionLog();
+      }, 500);
+    }
+  }
+
+  /**
+   * Flush session log buffer to disk
+   */
+  private async flushSessionLog(): Promise<void> {
+    this.sessionLogFlushTimer = null;
+    if (!this.sessionLogPath || this.sessionLogBuffer.length === 0) return;
+
+    const content = this.sessionLogBuffer.join('\n') + '\n';
+    this.sessionLogBuffer = [];
+
+    try {
+      const { appendFile } = await import('node:fs/promises');
+      await appendFile(this.sessionLogPath, content, 'utf-8');
+    } catch (e) {
+      console.error('[SESSION LOG] Failed to flush:', e);
+    }
+  }
+
+  /**
+   * Finalize session log with summary
+   */
+  async finalizeSessionLog(): Promise<void> {
+    // Flush remaining buffer
+    if (this.sessionLogFlushTimer) {
+      clearTimeout(this.sessionLogFlushTimer);
+      this.sessionLogFlushTimer = null;
+    }
+    await this.flushSessionLog();
+
+    if (!this.sessionLogPath) return;
+
+    const tasks = this.getAllBatchTasks();
+    const summary = [
+      '',
+      '='.repeat(60),
+      `Session Ended: ${new Date().toISOString()}`,
+      `Final Phase: ${this.currentPhase}`,
+      `Tasks: ${tasks.filter(t => t.status === 'complete').length}/${tasks.length} complete`,
+      '='.repeat(60),
+    ].join('\n');
+
+    try {
+      const { appendFile } = await import('node:fs/promises');
+      await appendFile(this.sessionLogPath, summary, 'utf-8');
+    } catch (e) {
+      console.error('[SESSION LOG] Failed to finalize:', e);
+    }
+  }
+
+  /**
    * Load project context from CLAUDE.md
    */
   async loadProjectContext(): Promise<string | null> {
@@ -420,18 +600,28 @@ export class Orchestrator {
 
   /**
    * Load common project documentation files
+   * Uses parallel reads for better performance
    */
   async loadProjectDocs(): Promise<Map<string, string>> {
     this.projectDocs.clear();
-    for (const fileName of PROJECT_DOC_FILES) {
-      const filePath = join(this.workingDir, fileName);
-      try {
+
+    // Read all files in parallel
+    const results = await Promise.allSettled(
+      PROJECT_DOC_FILES.map(async (fileName) => {
+        const filePath = join(this.workingDir, fileName);
         const content = await readFile(filePath, 'utf-8');
-        this.projectDocs.set(fileName, content);
-      } catch {
-        // File doesn't exist
+        return { fileName, content };
+      })
+    );
+
+    // Collect successful reads
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        this.projectDocs.set(result.value.fileName, result.value.content);
       }
+      // Ignore rejected (file doesn't exist)
     }
+
     return this.projectDocs;
   }
 
@@ -533,7 +723,13 @@ export class Orchestrator {
     const session = new ClaudeSession(config, {
       onOutput: (line) => {
         state.output.push(line);
+        // Cap output buffer to prevent OOM in indefinite mode
+        if (state.output.length > MAX_OUTPUT_LINES) {
+          state.output.shift();
+        }
         this.events.onAgentOutput(id, line);
+        // Append to session log for historical analysis
+        this.appendToSessionLog(id, line);
       },
       onStatusChange: (status) => {
         state.status = status;
@@ -610,7 +806,8 @@ export class Orchestrator {
   }
 
   /**
-   * Perform agent handoff
+   * Perform agent handoff with atomic rollback
+   * Creates new agent first, only kills old agent on success
    */
   async performHandoff(agentId: string, currentTaskId?: number): Promise<string> {
     const agent = this.agents.get(agentId);
@@ -623,6 +820,7 @@ export class Orchestrator {
 
     this.events.onAgentOutput(agentId, '[HANDOFF] Processing handoff...');
 
+    // Parse handoff block before any state changes
     const handoffBlock = parseHandoffBlock(agent.state.output);
     const handoff = createHandoffRecord(
       agentId,
@@ -632,24 +830,41 @@ export class Orchestrator {
       handoffBlock
     );
 
-    await this.handoffStorage.saveHandoff(handoff);
+    // ATOMIC: Create replacement agent FIRST (before killing old one)
+    let newAgentId: string;
+    try {
+      newAgentId = this.createAgent(role, name);
+      handoff.replacementAgentId = newAgentId;
+    } catch (error) {
+      // Rollback: failed to create replacement, keep old agent alive
+      this.events.onAgentOutput(agentId, `[HANDOFF] ROLLBACK - failed to create replacement: ${error}`);
+      throw new Error(`Handoff failed: could not create replacement agent - ${error}`);
+    }
 
-    if (this.persistedState) {
-      this.persistedState.handoffs = this.persistedState.handoffs || [];
-      this.persistedState.handoffs.push(handoff);
-      await this.saveState();
+    // New agent exists, safe to save handoff record
+    try {
+      await this.handoffStorage.saveHandoff(handoff);
+
+      if (this.persistedState) {
+        this.persistedState.handoffs = this.persistedState.handoffs || [];
+        this.persistedState.handoffs.push(handoff);
+        await this.saveState();
+      }
+    } catch (error) {
+      // Rollback: kill the new agent we just created
+      this.killAgent(newAgentId);
+      this.agents.delete(newAgentId);
+      this.events.onAgentOutput(agentId, `[HANDOFF] ROLLBACK - failed to save state: ${error}`);
+      throw new Error(`Handoff failed: could not save state - ${error}`);
     }
 
     this.events.onAgentOutput(agentId, `[HANDOFF] Saved handoff record with ${handoffBlock ? 'structured data' : 'minimal data'}`);
 
+    // Now safe to cleanup old agent
     this.killAgent(agentId);
     this.contextMonitor.unregisterAgent(agentId);
     this.pendingHandoffs.delete(agentId);
     this.agents.delete(agentId);
-
-    const newAgentId = this.createAgent(role, name);
-    handoff.replacementAgentId = newAgentId;
-    await this.handoffStorage.saveHandoff(handoff);
 
     this.events.onAgentOutput(newAgentId, `[HANDOFF] New agent created (replacing ${agentId.slice(0, 20)}...)`);
 
@@ -771,6 +986,9 @@ export class Orchestrator {
     this.events.onAgentOutput('orchestrator',
       `[SPAWN] Created ${developers.length} developers for this batch`);
 
+    // Notify TUI to refresh tiles
+    this.events.onAgentsChanged?.();
+
     return developers;
   }
 
@@ -800,7 +1018,9 @@ export class Orchestrator {
     this.currentPhase = phase;
     if (this.persistedState) {
       this.persistedState.phase = phase;
-      this.saveState().catch(() => {});
+      this.saveState().catch((e) => {
+        console.error('[STATE] Failed to save state during phase change:', e?.message || e);
+      });
     }
     this.events.onPhaseChange?.(phase);
     this.writeStatus();
@@ -1039,12 +1259,20 @@ ${sections.join('\n')}
 
   /**
    * Reset state for retry after CEO rejection
+   * V2: Clears all stale phase outputs to prevent incorrect data on retry
    */
   private async resetForRetry(): Promise<void> {
     if (this.persistedState) {
+      // Keep only planning + task-breakdown phases
       this.persistedState.completedPhases = this.persistedState.completedPhases.filter(
         p => p === 'planning' || p === 'task-breakdown'
       );
+
+      // CRITICAL: Clear stale phase outputs to prevent old data influencing retries
+      this.persistedState.lastTestOutput = [];
+      this.persistedState.lastQaOutput = [];
+
+      // Reset batch progress
       this.persistedState.currentBatchIndex = 0;
       for (const batch of this.persistedState.batches) {
         batch.status = 'pending';
@@ -1053,6 +1281,10 @@ ${sections.join('\n')}
           task.assignedTo = undefined;
         }
       }
+
+      // Clear in-progress task tracking
+      this.persistedState.currentTasksInProgress = [];
+
       await this.saveState();
     }
   }

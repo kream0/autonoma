@@ -155,6 +155,16 @@ export class HumanQueueStore {
     return result.changes;
   }
 
+  /**
+   * Get all messages (regardless of status)
+   */
+  getAll(): HumanQueueMessage[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM human_queue ORDER BY created_at DESC`
+    ).all() as DbRow[];
+    return rows.map((r) => this.toMessage(r));
+  }
+
   private toMessage(row: DbRow): HumanQueueMessage {
     return {
       id: row.id,

@@ -3,6 +3,7 @@
  *
  * Builds context to inject into retry prompts with error information.
  * V2 Update: Preserves full error trace history for learning from failures.
+ * V2.1 Update: Added developer affinity for routing retries to the same developer.
  */
 
 import { Database } from 'bun:sqlite';
@@ -28,6 +29,7 @@ export class RetryContextStore {
         verification_failures TEXT,
         human_resolution TEXT,
         error_traces TEXT,
+        preferred_developer_id TEXT,
         updated_at TEXT NOT NULL
       );
     `);
@@ -35,6 +37,13 @@ export class RetryContextStore {
     // V2: Add error_traces column if it doesn't exist (migration)
     try {
       this.db.exec(`ALTER TABLE retry_context ADD COLUMN error_traces TEXT;`);
+    } catch {
+      // Column already exists
+    }
+
+    // V2.1: Add preferred_developer_id column if it doesn't exist (migration)
+    try {
+      this.db.exec(`ALTER TABLE retry_context ADD COLUMN preferred_developer_id TEXT;`);
     } catch {
       // Column already exists
     }
@@ -57,6 +66,7 @@ export class RetryContextStore {
       errorTraces: row.error_traces
         ? JSON.parse(row.error_traces)
         : [],
+      preferredDeveloperId: row.preferred_developer_id ?? undefined,
     };
   }
 
@@ -65,8 +75,8 @@ export class RetryContextStore {
     this.db.run(
       `
       INSERT OR REPLACE INTO retry_context
-      (task_id, previous_attempts, last_error, verification_failures, human_resolution, error_traces, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (task_id, previous_attempts, last_error, verification_failures, human_resolution, error_traces, preferred_developer_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         taskId,
@@ -75,6 +85,7 @@ export class RetryContextStore {
         JSON.stringify(context.verificationFailures),
         context.humanResolution ?? null,
         JSON.stringify(context.errorTraces ?? []),
+        context.preferredDeveloperId ?? null,
         now,
       ]
     );
@@ -82,12 +93,14 @@ export class RetryContextStore {
 
   /**
    * Increment attempts and add new error trace to history
+   * V2.1: Added developerId parameter for affinity tracking
    */
   incrementAttempts(
     taskId: string,
     error: string,
     failures: VerificationResult[],
-    filesInvolved: string[] = []
+    filesInvolved: string[] = [],
+    developerId?: string
   ): RetryContext {
     const existing = this.get(taskId);
     const previousTraces = existing?.errorTraces ?? [];
@@ -114,9 +127,38 @@ export class RetryContextStore {
       verificationFailures: failures,
       humanResolution: existing?.humanResolution,
       errorTraces,
+      // V2.1: Track developer affinity - prefer first developer who worked on task
+      preferredDeveloperId: existing?.preferredDeveloperId ?? developerId,
     };
     this.save(taskId, context);
     return context;
+  }
+
+  /**
+   * V2.1: Get preferred developer for a task retry
+   */
+  getPreferredDeveloper(taskId: string): string | undefined {
+    const context = this.get(taskId);
+    return context?.preferredDeveloperId;
+  }
+
+  /**
+   * V2.1: Set preferred developer for a task
+   */
+  setPreferredDeveloper(taskId: string, developerId: string): void {
+    const existing = this.get(taskId);
+    if (existing) {
+      existing.preferredDeveloperId = developerId;
+      this.save(taskId, existing);
+    } else {
+      this.save(taskId, {
+        previousAttempts: 0,
+        lastError: '',
+        verificationFailures: [],
+        errorTraces: [],
+        preferredDeveloperId: developerId,
+      });
+    }
   }
 
   addHumanResolution(taskId: string, resolution: string): void {

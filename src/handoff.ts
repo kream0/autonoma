@@ -3,10 +3,14 @@
  *
  * Handles parsing of handoff blocks from agent output,
  * storage of handoff state, and injection into replacement agents.
+ *
+ * V2 Update: Added fallback handoff generation from git diff when
+ * agent crashes without providing a structured handoff block.
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import type {
   AgentHandoff,
   AgentRole,
@@ -157,6 +161,71 @@ export function createHandoffRecord(
     handoffBlock,
     sessionId,
   };
+}
+
+/**
+ * V2: Create a fallback handoff from git diff when agent crashes
+ * This ensures context isn't lost even if agent terminated unexpectedly
+ */
+export async function createFallbackHandoff(
+  _agentId: string,  // Reserved for future use (logging, etc.)
+  workingDir: string
+): Promise<ParsedHandoff> {
+  let filesModified: ParsedHandoff['filesModified'] = [];
+
+  try {
+    // Get modified files from git
+    const files = await runGitCommand(['diff', '--name-only', 'HEAD'], workingDir);
+    const stagedFiles = await runGitCommand(['diff', '--name-only', '--cached'], workingDir);
+
+    const allFiles = new Set([...files, ...stagedFiles].filter(f => f.trim()));
+
+    filesModified = Array.from(allFiles).map(path => ({
+      path: path.trim(),
+      lines: undefined,
+      functions: undefined,
+    }));
+  } catch (e: unknown) {
+    // Log git command failures (might indicate git not available, not a repo, etc.)
+    console.error('[HANDOFF] Git command failed during fallback handoff:', (e as Error)?.message || e);
+  }
+
+  return {
+    taskId: 0,
+    status: 'in_progress',
+    filesModified,
+    filesToTouch: [],
+    currentState: 'Agent terminated unexpectedly - fallback handoff generated from git',
+    blockers: undefined,
+    nextSteps: `1. Check git status for current changes
+2. Review modified files: ${filesModified.map(f => f.path).join(', ') || 'none detected'}
+3. Resume from the last task in the queue`,
+    context: 'FALLBACK HANDOFF - Review changes carefully before continuing',
+  };
+}
+
+/**
+ * Run a git command and return output lines
+ */
+async function runGitCommand(args: string[], cwd: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('git', args, { cwd });
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => { stdout += data.toString(); });
+    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve(stdout.trim().split('\n').filter(l => l.length > 0));
+      } else {
+        reject(new Error(stderr || `git exited with code ${code}`));
+      }
+    });
+
+    proc.on('error', reject);
+  });
 }
 
 /**

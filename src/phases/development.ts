@@ -9,6 +9,8 @@
  * - Recitation blocks at end of prompts
  * - Multi-stage verification pipeline
  * - Controlled noise in batch prompts
+ * - V2.1: File conflict detection for parallel execution
+ * - V2.1: Dynamic memory search with relevance filtering
  */
 
 import type { TaskBatch, DevTask } from '../types.ts';
@@ -18,6 +20,7 @@ import {
   verifyTask,
   allRequiredPassed,
   formatVerificationResults,
+  extractTopFailures,
 } from '../verification/index.ts';
 import { buildRetryPrompt } from '../retry/index.ts';
 import {
@@ -25,6 +28,92 @@ import {
   createEmptyProgress,
   type TaskProgress,
 } from './recitation.ts';
+
+/**
+ * V2.2: File conflict detector for parallel execution
+ * Tracks which developer is working on which files to prevent overwrites
+ * Uses mutex for atomic check-and-register to prevent race conditions
+ */
+class FileConflictDetector {
+  private fileOwners: Map<string, string> = new Map();
+  private mutex: Promise<void> = Promise.resolve();
+
+  /**
+   * Acquire mutex lock for atomic operations
+   */
+  private async lock<T>(fn: () => T): Promise<T> {
+    // Chain onto the mutex promise to serialize access
+    const result = this.mutex.then(fn);
+    // Update mutex to wait for this operation
+    this.mutex = result.then(() => {}, () => {});
+    return result;
+  }
+
+  /**
+   * Atomic check-and-register: checks for conflicts and registers files in one operation
+   * Returns conflicting files (empty array = success, files registered)
+   */
+  async checkAndRegister(developerId: string, files: string[]): Promise<string[]> {
+    return this.lock(() => {
+      // Check for conflicts
+      const conflicts = files.filter(f => {
+        const owner = this.fileOwners.get(f);
+        return owner !== undefined && owner !== developerId;
+      });
+
+      // If no conflicts, register the files atomically
+      if (conflicts.length === 0) {
+        for (const f of files) {
+          this.fileOwners.set(f, developerId);
+        }
+      }
+
+      return conflicts;
+    });
+  }
+
+  /**
+   * Check if any files would conflict with another developer (non-atomic, for reporting only)
+   */
+  checkConflict(developerId: string, files: string[]): string[] {
+    return files.filter(f => {
+      const owner = this.fileOwners.get(f);
+      return owner !== undefined && owner !== developerId;
+    });
+  }
+
+  /**
+   * Register files as being worked on by a developer
+   */
+  registerFiles(developerId: string, files: string[]): void {
+    for (const f of files) {
+      this.fileOwners.set(f, developerId);
+    }
+  }
+
+  /**
+   * Release files when developer is done (thread-safe)
+   */
+  async releaseFiles(developerId: string): Promise<void> {
+    return this.lock(() => {
+      for (const [file, owner] of this.fileOwners) {
+        if (owner === developerId) {
+          this.fileOwners.delete(file);
+        }
+      }
+    });
+  }
+
+  /**
+   * Get all files currently being worked on
+   */
+  getActiveFiles(): Map<string, string> {
+    return new Map(this.fileOwners);
+  }
+}
+
+// Shared conflict detector for parallel execution
+let conflictDetector: FileConflictDetector | null = null;
 
 // Instruction variants for controlled noise
 const INSTRUCTION_VARIANTS = [
@@ -135,6 +224,7 @@ ${requirements}
  * Execute tasks in parallel using work-stealing queue.
  * Each developer independently pulls tasks when ready.
  * Developers are already spawned with the optimal count for this batch.
+ * V2.1: Includes file conflict detection
  */
 async function executeTasksInParallel(
   ctx: PhaseContext,
@@ -146,9 +236,12 @@ async function executeTasksInParallel(
   // Create work-stealing queue
   const queue = new TaskQueue(tasks);
 
+  // V2.1: Initialize conflict detector for this batch
+  conflictDetector = new FileConflictDetector();
+
   if (developers[0]) {
     ctx.emitOutput(developers[0].state.config.id,
-      `[QUEUE] ${queue.getPendingCount()} tasks, ${developers.length} developers (work-stealing)`);
+      `[QUEUE] ${queue.getPendingCount()} tasks, ${developers.length} developers (work-stealing + conflict detection)`);
   }
 
   // Launch all developers as independent workers
@@ -158,6 +251,9 @@ async function executeTasksInParallel(
 
   // Wait for all workers to finish
   await Promise.all(workerPromises);
+
+  // Cleanup conflict detector
+  conflictDetector = null;
 }
 
 /**
@@ -171,15 +267,27 @@ async function developerWorker(
   contextSection: string
 ): Promise<void> {
   while (true) {
-    // Get next task from queue
-    const devTask = queue.getNextTask();
+    // Get next task from queue (async with mutex protection)
+    const devTask = await queue.getNextTask();
     if (!devTask) {
       // No more tasks - worker is done
       break;
     }
 
-    // Mark task as started
-    queue.startTask(developer.state.config.id, devTask);
+    // V2.2: Atomic check-and-register for file conflicts (prevents race conditions)
+    if (conflictDetector && devTask.files && devTask.files.length > 0) {
+      const conflicts = await conflictDetector.checkAndRegister(developer.state.config.id, devTask.files);
+      if (conflicts.length > 0) {
+        ctx.emitOutput(developer.state.config.id,
+          `[CONFLICT] Files ${conflicts.join(', ')} already being worked on - requeuing task`);
+        await queue.requeueTask(devTask);
+        continue; // Pick another task
+      }
+      // Files are now atomically registered
+    }
+
+    // Mark task as started (async with mutex protection)
+    await queue.startTask(developer.state.config.id, devTask);
     await ctx.saveState();
 
     const task = ctx.createTask(devTask.title, developer.state.config.id);
@@ -190,29 +298,40 @@ async function developerWorker(
 
     // Get retry context if this is a retry
     let retrySection = '';
+    const maxRetries = devTask.maxRetries ?? 2;
     if (ctx.retryContextStore && devTask.retryCount && devTask.retryCount > 0) {
       const retryCtx = ctx.retryContextStore.get(String(devTask.id));
       if (retryCtx) {
         retrySection = '\n' + buildRetryPrompt(retryCtx) + '\n';
         ctx.emitOutput(developer.state.config.id,
-          `[RETRY] Attempt ${retryCtx.previousAttempts + 1} with error context`);
+          `[RETRY ${devTask.retryCount}/${maxRetries}] Attempting with error context`);
       }
     }
 
-    // Retrieve relevant memories from memorai
+    // V2.1: Dynamic memory search with relevance filtering
     let memorySection = '';
     if (ctx.memorai) {
       try {
+        // Fetch more memories and filter by relevance
         const memories = ctx.memorai.search({
           query: `${devTask.title} ${devTask.description}`,
-          limit: 5,
+          limit: 20, // Fetch more, filter later
         });
-        if (memories.length > 0) {
+
+        // Filter by relevance score (0.5+) and take top 10
+        const relevantMemories = memories
+          .filter(m => (m.relevance ?? 0) >= 0.5)
+          .slice(0, 10);
+
+        if (relevantMemories.length > 0) {
           memorySection = '\n<relevant_memories>\n' +
-            memories.map(m => `<memory>${m.summary || m.title}</memory>`).join('\n') +
+            relevantMemories.map(m => {
+              const relScore = m.relevance ? ` (relevance: ${(m.relevance * 100).toFixed(0)}%)` : '';
+              return `<memory${relScore}>${m.summary || m.title}</memory>`;
+            }).join('\n') +
             '\n</relevant_memories>\n';
           ctx.emitOutput(developer.state.config.id,
-            `[MEMORAI] Retrieved ${memories.length} relevant memories`);
+            `[MEMORAI] Retrieved ${relevantMemories.length} relevant memories (filtered from ${memories.length})`);
         }
       } catch {
         // Memorai search failed - continue without memories
@@ -271,8 +390,9 @@ ${recitationBlock}`;
         );
 
         verificationPassed = allRequiredPassed(results, ctx.verificationConfig.criteria);
+        const failureSummary = verificationPassed ? '' : `\n${extractTopFailures(results)}`;
         ctx.emitOutput(developer.state.config.id,
-          `[VERIFY] ${verificationPassed ? 'PASSED' : 'FAILED'}\n${formatVerificationResults(results)}`);
+          `[VERIFY] ${verificationPassed ? 'PASSED' : 'FAILED'}\n${formatVerificationResults(results)}${failureSummary}`);
 
         // Handle verification failure
         if (!verificationPassed) {
@@ -280,12 +400,14 @@ ${recitationBlock}`;
           const currentRetries = devTask.retryCount ?? 0;
 
           if (currentRetries < maxRetries) {
-            // Save retry context and requeue
+            // Save retry context with developer affinity and requeue
             if (ctx.retryContextStore) {
               ctx.retryContextStore.incrementAttempts(
                 String(devTask.id),
                 'Verification failed',
-                results.filter(r => !r.passed)
+                results.filter(r => !r.passed),
+                devTask.files ?? [],
+                developer.state.config.id  // V2.1: Track which developer worked on this
               );
             }
 
@@ -293,9 +415,9 @@ ${recitationBlock}`;
             devTask.lastFailureReason = 'Verification failed: ' +
               results.filter(r => !r.passed).map(r => r.type).join(', ');
 
-            queue.requeueTask(devTask);
+            await queue.requeueTask(devTask);
             ctx.emitOutput(developer.state.config.id,
-              `[RETRY] Task ${devTask.id} queued for retry (${currentRetries + 1}/${maxRetries})`);
+              `[RETRY ${currentRetries + 1}/${maxRetries}] Task ${devTask.id} queued for next attempt`);
 
             // Don't update task status as complete yet
             ctx.updateTaskStatus(task.id, 'pending');
@@ -304,23 +426,23 @@ ${recitationBlock}`;
           } else {
             // Max retries exceeded - queue for human
             if (ctx.humanQueue) {
+              const topErrors = extractTopFailures(results);
               const blockerId = ctx.humanQueue.queueBlocker(
                 String(devTask.id),
                 developer.state.config.id,
-                `Task failed after ${maxRetries} attempts. Last failures: ${
-                  results.filter(r => !r.passed).map(r => `${r.type}: ${r.message}`).join('; ')
-                }`
+                `Task failed after ${maxRetries} attempts.\n${topErrors}`
               );
               ctx.emitOutput(developer.state.config.id,
-                `[BLOCKED] Task ${devTask.id} queued for human: ${blockerId}`);
+                `[BLOCKED] Task ${devTask.id} queued for human: ${blockerId}\n${topErrors}`);
             }
           }
         }
       }
 
       const finalSuccess = agentSuccess && verificationPassed;
-      queue.completeTask(developer.state.config.id, finalSuccess);
-      ctx.updateTaskStatus(task.id, finalSuccess ? 'complete' : 'failed');
+      await queue.completeTask(developer.state.config.id, finalSuccess);
+      devTask.status = finalSuccess ? 'complete' : 'failed';
+      ctx.updateTaskStatus(task.id, devTask.status);
 
       // Store learnings on success
       if (finalSuccess) {
@@ -351,9 +473,15 @@ ${recitationBlock}`;
         }
       }
     } catch (error) {
-      queue.completeTask(developer.state.config.id, false);
+      await queue.completeTask(developer.state.config.id, false);
+      devTask.status = 'failed';
       ctx.updateTaskStatus(task.id, 'failed');
       ctx.emitOutput(developer.state.config.id, `[ERROR] Task ${devTask.id} failed: ${error}`);
+    }
+
+    // V2.2: Release file locks after task completes (thread-safe)
+    if (conflictDetector && devTask.files) {
+      await conflictDetector.releaseFiles(developer.state.config.id);
     }
 
     await ctx.saveState();
@@ -384,20 +512,24 @@ async function executeTasksSequentially(
     ctx.emitOutput(developer.state.config.id,
       `[SEQUENTIAL] Task ${devTask.id}: ${devTask.title}${devTask.complexity ? ` (${devTask.complexity})` : ''}`);
 
-    // Retrieve relevant memories for this task
+    // V2.1: Dynamic memory search for sequential tasks
     let memorySection = '';
     if (ctx.memorai) {
       try {
         const memories = ctx.memorai.search({
           query: `${devTask.title} ${devTask.description}`,
-          limit: 5,
+          limit: 20,
         });
-        if (memories.length > 0) {
+        const relevantMemories = memories
+          .filter(m => (m.relevance ?? 0) >= 0.5)
+          .slice(0, 10);
+
+        if (relevantMemories.length > 0) {
           memorySection = '\n<relevant_memories>\n' +
-            memories.map(m => `<memory>${m.summary || m.title}</memory>`).join('\n') +
+            relevantMemories.map(m => `<memory>${m.summary || m.title}</memory>`).join('\n') +
             '\n</relevant_memories>\n';
           ctx.emitOutput(developer.state.config.id,
-            `[MEMORAI] Retrieved ${memories.length} relevant memories`);
+            `[MEMORAI] Retrieved ${relevantMemories.length} relevant memories`);
         }
       } catch {
         // Memorai search failed - continue without memories
@@ -497,8 +629,9 @@ export async function runRetryTasks(
     const task = ctx.createTask(`Retry: ${devTask.title}`, developer.state.config.id);
     ctx.updateTaskStatus(task.id, 'running');
 
+    const maxRetries = devTask.maxRetries ?? 2;
     ctx.emitOutput(developer.state.config.id,
-      `[RETRY] Task ${devTask.id}: ${devTask.title} (attempt ${devTask.retryCount})`);
+      `[RETRY ${devTask.retryCount}/${maxRetries}] Task ${devTask.id}: ${devTask.title}`);
 
     const devPrompt = `${contextSection}<task>
 <id>${devTask.id}</id>
