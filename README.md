@@ -138,6 +138,7 @@ Run with mock agents to test the UI.
 | `t` | Task list view |
 | `s` | Stats view |
 | `d` | Dashboard view |
+| `n` | Notifications (human queue messages) |
 | `p` | Pause & provide guidance (indefinite mode) |
 | `q` | Quit |
 
@@ -154,6 +155,101 @@ Also add error handling to the API endpoints
 ```
 
 The CEO will replan based on your guidance and continue execution.
+
+## External Control Commands
+
+Control a running Autonoma instance from another terminal:
+
+```bash
+# Check current status
+autonoma status ./project
+
+# Send guidance to CEO
+autonoma guide ./project "Focus on error handling first"
+
+# View pending blockers/questions
+autonoma queue ./project
+
+# Respond to a queued message
+autonoma respond ./project <message-id> "Use JWT for auth"
+
+# Pause execution
+autonoma pause ./project
+
+# View recent logs
+autonoma logs ./project --tail 50
+
+# System health check
+autonoma doctor
+```
+
+### Exit Codes (for CI/CD)
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success - project complete |
+| 1 | Failed - orchestration error |
+| 2 | Timeout - context/time limit reached |
+| 3 | Blocked - human intervention required |
+
+## Human Queue
+
+When agents encounter blockers, they queue messages for human resolution:
+
+**Message Types:**
+- `blocker` - Critical issue blocking progress (red)
+- `question` - Non-blocking question for guidance (yellow)
+- `approval` - Request requiring sign-off (cyan)
+
+**Auto-Resolution:** Common issues auto-resolve with suggested fixes:
+- Missing modules → "Run: npm install"
+- Port conflicts → "Run: lsof -ti:PORT | xargs kill -9"
+- Permission denied → "Run: chmod +x file"
+
+**Escalation:** After 30 minutes, unresolved messages auto-escalate or skip.
+
+**TUI:** Press `n` to view notifications panel.
+
+## Context Window Management
+
+Autonoma monitors context usage and triggers handoffs at thresholds:
+
+| Threshold | Action |
+|-----------|--------|
+| 40% | Reminder to stay focused |
+| 60% | Begin wrapping up exploratory work |
+| 70% | Complete current task, then pause |
+| 75% | **Handoff required** - agent saves state |
+
+At 75%, agents emit structured `<handoff>` blocks containing:
+- Files modified with line ranges
+- Current task status
+- Next steps for successor agent
+- Blockers and context notes
+
+## Verification Pipeline
+
+After task completion, automated checks run:
+
+1. **Typecheck** - `bun run typecheck` (required)
+2. **Tests** - `bun test` (required)
+3. **Build** - `bun run build` (optional)
+4. **Lint** - Linting check (optional)
+
+**Dynamic Timeouts:**
+- Unit tests: 3 minutes
+- E2E tests: 10 minutes (auto-detected for Playwright/Cypress)
+- Typecheck: 1 minute
+
+**Custom Config:** Create `.autonoma/verification.json`:
+```json
+{
+  "typecheck": true,
+  "tests": true,
+  "build": false,
+  "lint": false
+}
+```
 
 ## Views
 
@@ -240,11 +336,13 @@ Based on the task mix, Staff Engineer recommends parallel developers:
 
 | Task Mix | Recommended Developers |
 |----------|------------------------|
-| All simple/moderate | Up to 6 (full parallelism) |
+| All simple/moderate | One per task (full parallelism) |
 | Mix with complex | 3-4 developers |
 | Mostly complex/very_complex | 1-2 developers |
 
 Each task receives a `context` field with task-specific guidance, and batches with complex tasks use `maxParallelTasks` to limit concurrency.
+
+**Note:** There is no hard limit on developers. The system spawns one developer per task by default. A warning is logged if spawning 20+ developers for resource awareness.
 
 ## Development
 
@@ -263,16 +361,20 @@ bun run start
 
 ```
 src/
-├── index.ts            # CLI entry point, App classes
-├── types.ts            # Type definitions
-├── session.ts          # Claude Code subprocess wrapper
-├── orchestrator.ts     # Agent hierarchy & coordination
-├── indefinite.ts       # IndefiniteLoopController
-├── context-monitor.ts  # Context window monitoring
-├── handoff.ts          # Agent handoff block parsing
-├── queue.ts            # Work-stealing task queue
-├── watchdog.ts         # Health monitoring
-├── phases/             # Phase execution modules
+├── index.ts              # CLI entry point, App classes
+├── orchestrator.ts       # Agent hierarchy & coordination
+├── session.ts            # Claude Code subprocess wrapper
+├── queue.ts              # Work-stealing task queue (Deque-based)
+├── indefinite.ts         # IndefiniteLoopController
+├── context-monitor.ts    # Context window monitoring & handoff
+├── handoff.ts            # Handoff block parsing
+├── watchdog.ts           # Health monitoring
+├── observation-store.ts  # Large output storage
+├── db/
+│   └── schema.ts         # SQLite schema definitions
+├── phases/
+│   ├── index.ts          # Phase exports
+│   ├── types.ts          # Phase context types
 │   ├── planning.ts       # CEO planning & replan
 │   ├── task-breakdown.ts # Staff Engineer batching
 │   ├── development.ts    # Parallel/sequential execution
@@ -280,26 +382,41 @@ src/
 │   ├── review.ts         # QA review
 │   ├── ceo-approval.ts   # Final approval
 │   ├── prompts.ts        # Agent system prompts
-│   ├── prompt-builder.ts # KV-cache optimized prompt construction
-│   ├── recitation.ts     # End-of-prompt objective reminders
+│   ├── prompt-builder.ts # KV-cache optimized prompts
+│   ├── recitation.ts     # End-of-prompt reminders
 │   └── parsers.ts        # Output JSON parsers
-├── observation-store.ts  # File-based storage for large observations
-├── verification/       # Post-task verification
+├── protocol/
+│   └── parser.ts         # Protocol message parsing
+├── verification/
+│   ├── index.ts          # Verification runner
+│   ├── types.ts          # Verification types
 │   ├── detector.ts       # Project type detection
-│   ├── pipeline.ts       # Multi-stage verification runner
-│   └── index.ts          # Run typecheck/build/tests
-├── human-queue/        # Blocker management
-│   ├── store.ts          # SQLite storage
-│   └── index.ts          # HumanQueue class
-├── retry/              # Retry context injection
-│   └── index.ts          # Error context for retries
+│   └── pipeline.ts       # Multi-stage pipeline
+├── human-queue/
+│   ├── index.ts          # HumanQueue class
+│   ├── types.ts          # Queue types
+│   └── store.ts          # SQLite storage
+├── retry/
+│   ├── index.ts          # RetryContextStore
+│   └── types.ts          # Retry types
+├── types/
+│   ├── index.ts          # Type exports
+│   ├── agent.ts          # Agent types
+│   ├── task.ts           # Task/batch types
+│   ├── state.ts          # Persisted state
+│   ├── protocol.ts       # Protocol types
+│   └── memory.ts         # Memory types
+├── utils/
+│   ├── deque.ts          # O(1) double-ended queue
+│   └── mutex.ts          # Async mutex for thread safety
 └── tui/
-    ├── screen.ts       # Blessed screen + keybindings
-    ├── tiles.ts        # Split-tile layout
+    ├── screen.ts         # Blessed screen + keybindings
+    ├── tiles.ts          # Split-tile layout
     └── views/
-        ├── tasks.ts      # Task list
-        ├── stats.ts      # Statistics
-        └── dashboard.ts  # Agent overview
+        ├── tasks.ts        # Task list
+        ├── stats.ts        # Statistics
+        ├── dashboard.ts    # Agent overview
+        └── notifications.ts # Human queue messages
 ```
 
 ## License

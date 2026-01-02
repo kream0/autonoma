@@ -1,8 +1,8 @@
 # TODO - Development Priorities
 
 **Last Updated:** January 2, 2026 (Session 62)
-**Current Focus:** Stable - Memory-Enabled
-**Project Status:** All Sprints Complete
+**Current Focus:** Stable - Fully Documented
+**Project Status:** All Sprints Complete, README Updated
 
 ---
 
@@ -10,7 +10,10 @@
 
 ### Status: STABLE
 
-Session 62 enriched Memorai with 8 new memories (19 total). Hooks verified working.
+Session 62 completed comprehensive README overhaul:
+- Fixed outdated developer limit claims
+- Added 5 new documentation sections
+- Updated architecture tree with all 45+ files
 
 **No immediate action required.**
 
@@ -18,19 +21,27 @@ Session 62 enriched Memorai with 8 new memories (19 total). Hooks verified worki
 
 ## RECENTLY COMPLETED
 
+### README Documentation Overhaul (Session 62)
+
+- [x] Analyzed source code vs README discrepancies
+- [x] Fixed "up to 6 developers" misleading claim
+- [x] Added External Control Commands section (7 commands)
+- [x] Added Exit Codes for CI/CD (0/1/2/3)
+- [x] Added Human Queue section
+- [x] Added Context Window Management section
+- [x] Added Verification Pipeline section
+- [x] Added `n` keyboard shortcut for notifications
+- [x] Replaced architecture tree (30 → 45+ files)
+
 ### Memorai Setup (Session 62)
 
-- [x] Analyzed Memorai source code and integration
-- [x] Added 4 architecture memories (Retry, HumanQueue, Verification, ContextMonitor)
-- [x] Added 4 notes (Session 61 fix, E2BIG gotcha, Blessed TUI gotcha, CLI gap)
-- [x] Ran `memorai bootstrap --days 30`
-- [x] Verified hooks in `~/.claude/settings.json`
-- [x] Updated README with Memorai section
+- [x] Added 8 new memories (architecture + notes)
+- [x] Verified Claude Code hooks working
+- [x] Ran bootstrap scan
 
 ### Bug Fix - Task Status Persistence (Session 61)
 
-- [x] Fixed `devTask.status` not updated in parallel execution path
-- [x] Verified with bookmark-cli test (10/10 tasks correct)
+- [x] Fixed `devTask.status` in parallel execution path
 
 ---
 
@@ -46,10 +57,10 @@ All 4 sprints from improvement roadmap are complete:
 
 ## OPTIONAL IMPROVEMENTS
 
-1. [x] **Documentation** - README updated with Memorai section
+1. [x] **Documentation** - README fully updated
 2. [ ] **Performance Profiling** - Measure Sprint 3 improvements
 3. [ ] **End-to-end Testing** - Add automated test suite
-4. [ ] **Memorai CLI `update` command** - Currently API-only (gap found)
+4. [ ] **Memorai CLI `update` command** - Currently API-only
 
 ---
 
@@ -71,6 +82,8 @@ bun run src/index.ts doctor
 # Check memory status
 npx memorai status
 
-# Search memories
-npx memorai find "query"
+# External control
+autonoma status ./project
+autonoma guide ./project "message"
+autonoma queue ./project
 ```
